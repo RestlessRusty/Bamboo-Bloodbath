@@ -5,7 +5,7 @@ import { LocalGame } from './game/LocalGame';
 import { cyclePick, hutDirection, isMapRef, isValidPick, loadMap, previewMap, resolvePick } from './game/maps';
 import { RemoteGame } from './game/RemoteGame';
 import type { GameContext, Session } from './game/Session';
-import { InputManager } from './input/InputManager';
+import { InputManager, requestTiltPermission } from './input/InputManager';
 import { NetClient } from './net/NetClient';
 import { NetHost } from './net/NetHost';
 import type { LobbyPlayer } from './net/protocol';
@@ -178,6 +178,21 @@ function enterFullscreenLandscape(): void {
   }
 }
 
+/**
+ * Must run inside a tap. iOS forgets motion-sensor permission on reload, so a saved "tilt"
+ * choice asks again here; without sensors we fall back to the joystick rather than a stuck panda.
+ */
+function ensureTiltPermission(): void {
+  if (settings.controls !== 'tilt') return;
+  void requestTiltPermission().then((ok) => {
+    if (ok || settings.controls !== 'tilt') return;
+    settings.controls = 'joystick';
+    saveSettings(settings);
+    input.setScheme('joystick');
+    hud.flash('Motion sensors unavailable: switched to joystick controls.');
+  });
+}
+
 async function requestWakeLock(): Promise<void> {
   try {
     const wl = (navigator as unknown as { wakeLock?: { request(type: 'screen'): Promise<{ release(): Promise<void> }> } }).wakeLock;
@@ -223,6 +238,7 @@ function enterGame(mapRef: MapRef, create: () => Session): void {
 
 async function startSolo(): Promise<void> {
   enterFullscreenLandscape();
+  ensureTiltPermission();
   unlockAudio();
   await physicsReady;
   mode = 'solo';
@@ -314,6 +330,7 @@ async function createRoom(): Promise<void> {
 
 async function joinRoom(code: string): Promise<void> {
   enterFullscreenLandscape();
+  ensureTiltPermission();
   const token = ++netToken;
   lobby.showBusy(`Joining room ${code}…`);
   try {
@@ -354,6 +371,7 @@ async function hostStart(): Promise<void> {
   const h = host;
   if (!h) return;
   enterFullscreenLandscape();
+  ensureTiltPermission();
   unlockAudio();
   await physicsReady;
   if (host !== h) return;
