@@ -16,14 +16,17 @@ export function openPeer(id?: string): Promise<Peer> {
       peer.destroy();
       reject(new Error('Could not reach the matchmaking server. Check your internet connection.'));
     }, 12000);
-    peer.once('open', () => {
-      window.clearTimeout(timer);
-      resolve(peer);
-    });
-    peer.once('error', (err) => {
+    const onError = (err: unknown) => {
       window.clearTimeout(timer);
       peer.destroy();
       reject(err);
+    };
+    peer.once('open', () => {
+      window.clearTimeout(timer);
+      // Only fail while connecting: later errors (e.g. a dropped signalling socket) are the caller's to handle.
+      peer.off('error', onError);
+      resolve(peer);
     });
+    peer.once('error', onError);
   });
 }

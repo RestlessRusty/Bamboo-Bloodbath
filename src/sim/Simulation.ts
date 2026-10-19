@@ -395,7 +395,7 @@ export class Simulation implements BotWorld {
     });
   }
 
-  private spawnZombie(x: number, z: number, from: string | null): void {
+  private spawnZombie(x: number, z: number, from: string | null, sleeper = false): void {
     const rot = this.rng.range(-Math.PI, Math.PI);
     this.zombies.push({
       id: this.nextZombieId++,
@@ -414,6 +414,7 @@ export class Simulation implements BotWorld {
       hurt: 0,
       look: Math.floor(this.rng.next() * 4),
       from,
+      sleeper,
       speedMul: this.rng.range(0.85, 1.1),
       target: null,
       via: null,
@@ -437,7 +438,7 @@ export class Simulation implements BotWorld {
       const x = this.rng.range(-half, half);
       const z = this.rng.range(-half, half);
       if (dist2d({ x, z }, this.map.layout.start) < 32) continue;
-      if (this.validSpawn(x, z)) this.spawnZombie(x, z, null);
+      if (this.validSpawn(x, z)) this.spawnZombie(x, z, null, true);
     }
   }
 
@@ -949,13 +950,22 @@ export class Simulation implements BotWorld {
 
   private cleanupZombies(): void {
     const anchors = this.survivors.filter((s) => s.state === 'active' || s.state === 'downed');
+    let rearmost = -1; // route distance of the furthest-behind survivor, worked out on demand
     for (let i = this.zombies.length - 1; i >= 0; i--) {
       const z = this.zombies[i];
       let remove = false;
       if (z.state === 'dying') remove = z.stateTime >= ZOMBIE.dyingTime;
-      else if (!z.target && z.from === null) {
+      else if (!z.target && z.from === null && anchors.length > 0) {
         // Recycle stragglers left far behind.
-        remove = anchors.length > 0 && anchors.every((s) => dist2d(s, z) > ZOMBIE.despawnRadius);
+        const far = anchors.every((s) => dist2d(s, z) > ZOMBIE.despawnRadius);
+        if (!far) z.sleeper = false;
+        else if (!z.sleeper) remove = true;
+        else {
+          // The starting horde waits out on the map until the whole group is past it.
+          const { route } = this.map;
+          if (rearmost < 0) rearmost = Math.min(...anchors.map((s) => route.locate(s.x, s.z).along));
+          remove = route.locate(z.x, z.z).along < rearmost;
+        }
       }
       if (!remove) continue;
       if (z.body) this.world.removeRigidBody(z.body);

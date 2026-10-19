@@ -163,8 +163,13 @@ function enterFullscreenLandscape(): void {
   if (!window.matchMedia('(pointer: coarse)').matches) return;
   const root = document.documentElement;
   const lock = () => {
-    const orientation = screen.orientation as unknown as { lock?: (o: string) => Promise<void> };
-    orientation.lock?.('landscape').catch(() => undefined);
+    // Older iOS has no screen.orientation at all, and some browsers throw instead of rejecting.
+    const orientation = screen.orientation as unknown as { lock?: (o: string) => Promise<void> } | undefined;
+    try {
+      orientation?.lock?.('landscape')?.catch(() => undefined);
+    } catch {
+      // Not supported: the CSS rotate hint covers portrait.
+    }
   };
   if (!document.fullscreenElement && root.requestFullscreen) {
     root.requestFullscreen({ navigationUI: 'hide' }).then(lock, () => undefined);

@@ -55,6 +55,8 @@ export interface Zombie {
   hurt: number;
   look: number;
   from: string | null;
+  /** Placed on the map at match start; not recycled until the group has gone past it. */
+  sleeper: boolean;
   speedMul: number;
   target: Survivor | null;
   /** Bridge or ford end to walk to first when water is in the way of the target. */

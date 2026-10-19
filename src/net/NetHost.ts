@@ -1,7 +1,7 @@
 import type { DataConnection, Peer } from 'peerjs';
 import { MAX_PLAYERS } from '../config';
 import type { MapRef } from '../sim/mapLayout';
-import type { PlayerInput, PlayerSpec, Snapshot } from '../sim/types';
+import { NO_INPUT, type PlayerInput, type PlayerSpec, type Snapshot } from '../sim/types';
 import { encodeSnapshot } from './codec';
 import { openPeer, peerErrorType } from './peer';
 import {
@@ -16,6 +16,9 @@ import {
   type HostMsg,
   type LobbyPlayer,
 } from './protocol';
+
+/** A guest sends input ~30 times a second; this long without any, their panda stops. */
+const INPUT_STALE_MS = 500;
 
 interface Remote {
   conn: DataConnection;
@@ -39,6 +42,7 @@ export class NetHost {
 
   private readonly remotes: Remote[] = [];
   private readonly inputs = new Map<string, PlayerInput>();
+  private readonly inputAt = new Map<string, number>();
 
   private constructor(
     private readonly peer: Peer,
@@ -89,13 +93,16 @@ export class NetHost {
   start(specs: PlayerSpec[], map: MapRef): void {
     this.inGame = true;
     this.inputs.clear();
+    this.inputAt.clear();
     this.broadcast({ t: 'start', specs, map });
   }
 
-  /** Latest input from a guest. A dash press is handed out only once. */
+  /** Latest input from a guest. A dash press is handed out only once; a guest gone quiet stands still. */
   inputFor(id: string): PlayerInput | undefined {
     const i = this.inputs.get(id);
-    if (i?.dash) this.inputs.set(id, { ...i, dash: false });
+    if (!i) return undefined;
+    if (performance.now() - (this.inputAt.get(id) ?? 0) > INPUT_STALE_MS) return { ...NO_INPUT };
+    if (i.dash) this.inputs.set(id, { ...i, dash: false });
     return i;
   }
 
@@ -107,6 +114,7 @@ export class NetHost {
   backToLobby(): void {
     this.inGame = false;
     this.inputs.clear();
+    this.inputAt.clear();
     const connected = new Set(this.remotes.map((r) => r.id));
     for (let i = this.players.length - 1; i >= 1; i--) {
       if (!connected.has(this.players[i].id)) this.players.splice(i, 1);
@@ -148,6 +156,7 @@ export class NetHost {
       // Keep an unconsumed dash press until the simulation has seen it.
       if (this.inputs.get(r.id)?.dash) input.dash = true;
       this.inputs.set(r.id, input);
+      this.inputAt.set(r.id, performance.now());
     }
   }
 
@@ -157,6 +166,7 @@ export class NetHost {
     this.remotes.splice(i, 1);
     if (!r.id) return;
     this.inputs.delete(r.id);
+    this.inputAt.delete(r.id);
     if (this.inGame) {
       this.onPlayerLeft?.(r.id);
     } else {
