@@ -114,14 +114,3 @@ src/
 The simulation and the renderer only talk through `PlayerInput` (in) and `Snapshot` (out), which is
 what makes the same game run solo, as host, or as a guest.
 
-## Roadmap
-
-1. ✅ Project setup, GitHub Pages deploy
-2. ✅ Map, panda, controls, camera, knife
-3. ✅ Zombie AI and horde, combat, health, win/lose
-4. ✅ Axe and javelin, weapon racks, bot teammates, downed / revive / turned
-5. ✅ Multiplayer: PeerJS rooms with codes, lobby, state sync
-6. ✅ Polish: sound, music, effects, HUD
-
-Ideas next: more maps, special zombie types, Android packaging (Capacitor or PWABuilder), host
-migration in multiplayer, client-side prediction for smoother guest movement.
