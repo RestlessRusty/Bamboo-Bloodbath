@@ -1,0 +1,366 @@
+import './style.css';
+import { Sfx } from './audio/Sfx';
+import { MATCH_TIME } from './config';
+import { LocalGame } from './game/LocalGame';
+import { RemoteGame } from './game/RemoteGame';
+import type { GameContext, Session } from './game/Session';
+import { InputManager } from './input/InputManager';
+import { NetClient } from './net/NetClient';
+import { NetHost } from './net/NetHost';
+import type { LobbyPlayer } from './net/protocol';
+import { Renderer } from './render/Renderer';
+import { loadSettings, saveSettings } from './settings';
+import { botName } from './sim/bots';
+import { createGameMap } from './sim/gameMap';
+import { NATURE_MAP } from './sim/mapLayout';
+import { initPhysics } from './sim/physics';
+import { PANDA_VARIANTS, WEAPON_TYPES, type PlayerSpec, type Snapshot } from './sim/types';
+import { el, formatTime } from './ui/dom';
+import { Hud, type EndMode } from './ui/Hud';
+import { Lobby } from './ui/Lobby';
+import { Menu } from './ui/Menu';
+import { SettingsPanel, type SettingKey } from './ui/SettingsPanel';
+
+// ------------------------------------------------------------------ error reporting
+
+// Phones have no dev console, so surface errors on screen.
+function showError(msg: string): void {
+  let box = document.querySelector<HTMLDivElement>('.error-box');
+  if (!box) {
+    box = el('div', 'error-box');
+    box.title = 'Tap to dismiss';
+    box.addEventListener('click', () => box?.remove());
+    document.body.appendChild(box);
+  }
+  box.textContent += `${msg}\n`;
+}
+window.addEventListener('error', (e) => showError(String(e.message)));
+window.addEventListener('unhandledrejection', (e) => showError(String(e.reason)));
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+// ------------------------------------------------------------------ core objects
+
+const appEl = document.getElementById('app')!;
+const uiEl = document.getElementById('ui')!;
+
+const settings = loadSettings();
+const map = createGameMap(NATURE_MAP);
+const renderer = new Renderer(appEl, map, settings.quality);
+const physicsReady = initPhysics();
+const sfx = new Sfx();
+sfx.setEnabled(settings.sound, settings.music);
+
+let session: Session | null = null;
+let mode: EndMode = 'solo';
+let localId = 'p1';
+let host: NetHost | null = null;
+let client: NetClient | null = null;
+/** Bumped whenever we leave multiplayer, so late network replies are ignored. */
+let netToken = 0;
+let wakeLock: { release(): Promise<void> } | null = null;
+const fallbackName = `Panda${Math.floor(100 + Math.random() * 900)}`;
+
+const input = new InputManager(uiEl, {
+  screenToGround: (x, y) => renderer.screenToGround(x, y),
+  playerPos: () => renderer.localPlayerPos(),
+  onPause: () => {
+    if (session && !session.isOver) setPaused(!session.paused);
+  },
+});
+input.setScheme(settings.controls);
+input.setFlipTilt(settings.flipTilt);
+
+const settingsPanel = new SettingsPanel(uiEl, settings, onSettingChanged, () => input.calibrateTilt());
+
+const hud = new Hud(uiEl, map.layout.goal, {
+  onPause: () => setPaused(true),
+  onResume: () => setPaused(false),
+  onSettings: () => settingsPanel.open(),
+  onRestart: () => void startSolo(),
+  onLobby: () => hostBackToLobby(),
+  onQuit: () => leaveToMenu(),
+});
+
+const menu = new Menu(uiEl, settings, {
+  onPlaySolo: () => void startSolo(),
+  onMultiplayer: () => {
+    unlockAudio();
+    menu.hide();
+    lobby.showChoose();
+  },
+  onSettings: () => settingsPanel.open(),
+  onPreview: () => renderer.setShowcase(settings.variant, settings.weapon),
+  onChange: () => saveSettings(settings),
+});
+
+const lobby = new Lobby(uiEl, {
+  onCreate: () => void createRoom(),
+  onJoin: (code) => void joinRoom(code),
+  onStart: () => void hostStart(),
+  onBots: (n) => host?.setBots(n),
+  onLeave: () => leaveToMenu(),
+});
+
+const ctx: GameContext = { map, renderer, input, hud, sfx, settings };
+
+renderer.setShowcase(settings.variant, settings.weapon);
+
+// ------------------------------------------------------------------ helpers
+
+function onSettingChanged(key: SettingKey): void {
+  saveSettings(settings);
+  if (key === 'quality') renderer.setQuality(settings.quality);
+  if (key === 'controls') input.setScheme(settings.controls);
+  if (key === 'flipTilt') input.setFlipTilt(settings.flipTilt);
+  if (key === 'sound' || key === 'music') sfx.setEnabled(settings.sound, settings.music);
+}
+
+function unlockAudio(): void {
+  sfx.unlock();
+  sfx.setMusic(true);
+}
+document.addEventListener('pointerdown', unlockAudio, { once: true });
+
+function nickname(): string {
+  return settings.nickname.trim() || fallbackName;
+}
+
+function profile(): Omit<LobbyPlayer, 'id'> {
+  return { name: nickname(), variant: settings.variant, weapon: settings.weapon };
+}
+
+function botSpecs(count: number): PlayerSpec[] {
+  const offset = Math.floor(Math.random() * 10);
+  return Array.from({ length: count }, (_, i) => ({
+    id: `b${i + 1}`,
+    name: botName(offset + i),
+    variant: PANDA_VARIANTS[Math.floor(Math.random() * PANDA_VARIANTS.length)],
+    weapon: WEAPON_TYPES[Math.floor(Math.random() * WEAPON_TYPES.length)],
+    bot: true,
+  }));
+}
+
+/** Must run inside a tap (browsers require a user gesture). */
+function enterFullscreenLandscape(): void {
+  if (!window.matchMedia('(pointer: coarse)').matches) return;
+  const root = document.documentElement;
+  const lock = () => {
+    const orientation = screen.orientation as unknown as { lock?: (o: string) => Promise<void> };
+    orientation.lock?.('landscape').catch(() => undefined);
+  };
+  if (!document.fullscreenElement && root.requestFullscreen) {
+    root.requestFullscreen({ navigationUI: 'hide' }).then(lock, () => undefined);
+  } else {
+    lock();
+  }
+}
+
+async function requestWakeLock(): Promise<void> {
+  try {
+    const wl = (navigator as unknown as { wakeLock?: { request(type: 'screen'): Promise<{ release(): Promise<void> }> } }).wakeLock;
+    if (wl && !wakeLock) wakeLock = await wl.request('screen');
+  } catch {
+    // Not supported or denied: the screen may dim during long matches.
+  }
+}
+
+function releaseWakeLock(): void {
+  wakeLock?.release().catch(() => undefined);
+  wakeLock = null;
+}
+
+// ------------------------------------------------------------------ sessions
+
+function clearSession(): void {
+  session?.dispose();
+  session = null;
+}
+
+function enterGame(create: () => Session): void {
+  clearSession();
+  renderer.clearShowcase();
+  menu.hide();
+  lobby.hide();
+  hud.show();
+  session = create();
+  input.setEnabled(true);
+  void requestWakeLock();
+  hud.flash('Reach the rescue hut in the far corner!', 3500);
+}
+
+async function startSolo(): Promise<void> {
+  enterFullscreenLandscape();
+  unlockAudio();
+  await physicsReady;
+  mode = 'solo';
+  localId = 'p1';
+  const specs: PlayerSpec[] = [
+    { id: 'p1', name: nickname(), variant: settings.variant, weapon: settings.weapon, bot: false },
+    ...botSpecs(settings.bots),
+  ];
+  enterGame(() => new LocalGame(ctx, specs, localId, onGameEnd));
+}
+
+function onGameEnd(snap: Snapshot): void {
+  input.setEnabled(false);
+  releaseWakeLock();
+  const won = snap.phase === 'won';
+  sfx.play(won ? 'win' : 'lose');
+
+  const me = snap.survivors.find((s) => s.id === localId);
+  const kills = me ? ` You bonked ${me.kills} zombie${me.kills === 1 ? '' : 's'}.` : '';
+  let text: string;
+  if (won) {
+    const who = snap.survivors.length > 1 ? `${snap.rescued} of ${snap.survivors.length} pandas made it` : 'You made it';
+    text = `${who} in ${formatTime(MATCH_TIME - snap.timeLeft)}.${kills}`;
+  } else {
+    text = (snap.timeLeft <= 0 ? "Time's up! The rescue hut left without you." : 'The zombies got everyone…') + kills;
+  }
+  hud.showEnd(won, text, mode);
+}
+
+function setPaused(on: boolean): void {
+  if (!session || session.isOver) return;
+  session.paused = on;
+  hud.setPaused(on, session.canPause);
+  input.setEnabled(!on);
+}
+
+function leaveToMenu(message = ''): void {
+  netToken++;
+  clearSession();
+  host?.close();
+  host = null;
+  client?.close();
+  client = null;
+  input.setEnabled(false);
+  hud.hide();
+  lobby.hide();
+  releaseWakeLock();
+  renderer.setShowcase(settings.variant, settings.weapon);
+  menu.show(message);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && session?.canPause) setPaused(true);
+});
+
+// ------------------------------------------------------------------ multiplayer
+
+function showRoom(): void {
+  if (host) lobby.showRoom({ code: host.code, players: host.players, bots: host.bots, isHost: true, myId: 'p1' });
+  else if (client) lobby.showRoom({ code: client.code, players: client.players, bots: client.bots, isHost: false, myId: client.myId });
+}
+
+async function createRoom(): Promise<void> {
+  const token = ++netToken;
+  lobby.showBusy('Creating room…');
+  try {
+    const h = await NetHost.create(profile());
+    if (token !== netToken) {
+      h.close();
+      return;
+    }
+    host = h;
+    h.onChange = () => {
+      if (!session) showRoom();
+    };
+    h.onPlayerLeft = (id) => {
+      if (session instanceof LocalGame) session.convertToBot(id);
+      const name = h.players.find((p) => p.id === id)?.name ?? 'A player';
+      hud.flash(`${name} left. A bot takes over their panda.`);
+    };
+    showRoom();
+  } catch (err) {
+    if (token === netToken) lobby.showChoose(errorText(err));
+  }
+}
+
+async function joinRoom(code: string): Promise<void> {
+  enterFullscreenLandscape();
+  const token = ++netToken;
+  lobby.showBusy(`Joining room ${code}…`);
+  try {
+    const c = await NetClient.join(code, profile(), map.props.bambooSpots.length);
+    if (token !== netToken) {
+      c.close();
+      return;
+    }
+    client = c;
+    c.onLobby = () => {
+      if (session) {
+        // The host went back to the lobby after a match.
+        clearSession();
+        hud.hide();
+        input.setEnabled(false);
+        renderer.setShowcase(settings.variant, settings.weapon);
+      }
+      showRoom();
+    };
+    c.onStart = (specs) => {
+      mode = 'guest';
+      localId = c.myId;
+      enterGame(() => new RemoteGame(ctx, specs, c.myId, onGameEnd, c));
+    };
+    c.onSnapshot = (snap) => {
+      if (session instanceof RemoteGame) session.receive(snap);
+    };
+    c.onClosed = (reason) => leaveToMenu(reason);
+    showRoom();
+  } catch (err) {
+    if (token === netToken) lobby.showChoose(errorText(err));
+  }
+}
+
+async function hostStart(): Promise<void> {
+  const h = host;
+  if (!h) return;
+  enterFullscreenLandscape();
+  unlockAudio();
+  await physicsReady;
+  if (host !== h) return;
+  const specs: PlayerSpec[] = [...h.players.map((p) => ({ ...p, bot: false })), ...botSpecs(h.bots)];
+  mode = 'host';
+  localId = 'p1';
+  h.start(specs);
+  enterGame(() => new LocalGame(ctx, specs, localId, onGameEnd, h));
+}
+
+function hostBackToLobby(): void {
+  clearSession();
+  hud.hide();
+  input.setEnabled(false);
+  renderer.setShowcase(settings.variant, settings.weapon);
+  host?.backToLobby();
+  showRoom();
+}
+
+// ------------------------------------------------------------------ main loop
+
+let last = performance.now();
+let fpsTime = 0;
+let fpsFrames = 0;
+let fps = 0;
+
+function frame(now: number): void {
+  const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+  last = now;
+  fpsTime += dt;
+  fpsFrames++;
+  if (fpsTime >= 0.5) {
+    fps = Math.round(fpsFrames / fpsTime);
+    fpsTime = 0;
+    fpsFrames = 0;
+  }
+
+  if (session) session.frame(dt, settings.showFps ? fps : null);
+  else renderer.updateShowcase(dt);
+  renderer.render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+document.getElementById('boot')?.remove();

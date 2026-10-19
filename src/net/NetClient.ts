@@ -1,0 +1,112 @@
+import type { DataConnection, Peer } from 'peerjs';
+import type { PlayerInput, PlayerSpec, Snapshot } from '../sim/types';
+import { decodeSnapshot } from './codec';
+import { openPeer, peerErrorType } from './peer';
+import { encodeInput, PEER_PREFIX, PROTOCOL_VERSION, type HostMsg, type LobbyPlayer } from './protocol';
+
+/** A guest's connection to the host's room. */
+export class NetClient {
+  players: LobbyPlayer[] = [];
+  bots = 0;
+  onLobby: (() => void) | null = null;
+  onStart: ((specs: PlayerSpec[]) => void) | null = null;
+  onSnapshot: ((snap: Snapshot) => void) | null = null;
+  onClosed: ((reason: string) => void) | null = null;
+  private closed = false;
+
+  private constructor(
+    private readonly peer: Peer,
+    private readonly conn: DataConnection,
+    readonly myId: string,
+    readonly code: string,
+    private readonly bambooCount: number,
+  ) {
+    conn.on('data', (data) => this.onData(data as HostMsg));
+    conn.on('close', () => this.lost('Lost connection to the host.'));
+    conn.on('error', () => this.lost('Lost connection to the host.'));
+    peer.on('disconnected', () => {
+      if (!peer.destroyed) peer.reconnect();
+    });
+  }
+
+  static async join(code: string, me: Omit<LobbyPlayer, 'id'>, bambooCount: number): Promise<NetClient> {
+    const peer = await openPeer();
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (message: string) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        peer.destroy();
+        reject(new Error(message));
+      };
+      const timer = window.setTimeout(() => fail('Could not connect to the room. Check the code and try again.'), 15000);
+
+      const conn = peer.connect(PEER_PREFIX + code, { reliable: true, serialization: 'json' });
+      peer.on('error', (err) => {
+        const type = peerErrorType(err);
+        if (type === 'peer-unavailable') fail(`Room ${code} not found. Check the code.`);
+        else if (!settled) fail(`Connection problem (${type || 'unknown'}).`);
+      });
+      conn.on('open', () => {
+        conn.send({ t: 'hello', v: PROTOCOL_VERSION, name: me.name, variant: me.variant, weapon: me.weapon });
+      });
+      conn.on('data', (data) => {
+        if (settled) return;
+        const msg = data as HostMsg;
+        if (msg?.t === 'welcome') {
+          settled = true;
+          window.clearTimeout(timer);
+          resolve(new NetClient(peer, conn, msg.id, code, bambooCount));
+        } else if (msg?.t === 'reject') {
+          fail(msg.reason);
+        }
+      });
+    });
+  }
+
+  sendInput(input: PlayerInput): void {
+    if (this.closed || !this.conn.open) return;
+    try {
+      this.conn.send({ t: 'input', i: encodeInput(input) });
+    } catch {
+      // Channel hiccup; the next input will follow shortly.
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.conn.close();
+    window.setTimeout(() => this.peer.destroy(), 100);
+  }
+
+  private onData(msg: HostMsg): void {
+    if (!msg || typeof msg !== 'object') return;
+    switch (msg.t) {
+      case 'lobby':
+        this.players = Array.isArray(msg.players) ? msg.players : [];
+        this.bots = typeof msg.bots === 'number' ? msg.bots : 0;
+        this.onLobby?.();
+        break;
+      case 'start':
+        if (Array.isArray(msg.specs)) this.onStart?.(msg.specs);
+        break;
+      case 'snap':
+        this.onSnapshot?.(decodeSnapshot(msg.s, this.bambooCount));
+        break;
+      case 'bye':
+        this.lost(msg.reason || 'The host left.');
+        break;
+      default:
+        break;
+    }
+  }
+
+  private lost(reason: string): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.peer.destroy();
+    this.onClosed?.(reason);
+  }
+}

@@ -1,0 +1,144 @@
+import {
+  WEAPON_TYPES,
+  type GameEvent,
+  type JavelinSnap,
+  type MatchPhase,
+  type Snapshot,
+  type SurvivorSnap,
+  type SurvivorState,
+  type ZombieSnap,
+  type ZombieState,
+} from '../sim/types';
+
+/**
+ * Compact wire format for snapshots: arrays instead of objects, numbers rounded.
+ * About 2–3 KB per snapshot with a full horde, sent 20 times a second.
+ */
+export interface EncodedSnapshot {
+  k: number;
+  tl: number;
+  ph: number;
+  r: number;
+  s: (string | number)[][];
+  z: (string | number)[][];
+  j: number[][];
+  b: number;
+  rk: number[];
+  e: GameEvent[];
+}
+
+const PHASES: readonly MatchPhase[] = ['playing', 'won', 'lost'];
+const SURVIVOR_STATES: readonly SurvivorState[] = ['active', 'downed', 'rescued', 'dead'];
+const ZOMBIE_STATES: readonly ZombieState[] = ['walk', 'bite', 'lunge', 'stun', 'dying'];
+
+const r2 = (v: number) => Math.round(v * 100) / 100;
+const r3 = (v: number) => Math.round(v * 1000) / 1000;
+const n = (v: unknown) => (typeof v === 'number' ? v : 0);
+const str = (v: unknown) => (typeof v === 'string' ? v : '');
+
+export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
+  let bamboo = 0;
+  s.bamboo.forEach((on, i) => {
+    if (on) bamboo |= 1 << i;
+  });
+  return {
+    k: s.tick,
+    tl: r2(s.timeLeft),
+    ph: PHASES.indexOf(s.phase),
+    r: s.rescued,
+    s: s.survivors.map((v) => [
+      v.id,
+      r3(v.x),
+      r3(v.y),
+      r3(v.z),
+      r3(v.rot),
+      r2(v.speed),
+      r2(v.attackT),
+      (v.dashing ? 1 : 0) | (v.inWater ? 2 : 0) | (v.hidden ? 4 : 0),
+      v.hp,
+      SURVIVOR_STATES.indexOf(v.state),
+      WEAPON_TYPES.indexOf(v.weapon),
+      v.ammo,
+      r2(v.bleed),
+      r2(v.revive),
+      r2(v.hurt),
+      v.kills,
+    ]),
+    z: s.zombies.map((v) => [
+      v.id,
+      r2(v.x),
+      r2(v.y),
+      r2(v.z),
+      r2(v.rot),
+      r2(v.speed),
+      ZOMBIE_STATES.indexOf(v.state),
+      r2(v.t),
+      v.look,
+      r2(v.hurt),
+      v.from ?? '',
+    ]),
+    j: s.javelins.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z), r2(v.yaw), r2(v.pitch), v.flying ? 1 : 0]),
+    b: bamboo,
+    rk: s.racks.map((w) => WEAPON_TYPES.indexOf(w)),
+    e: s.events,
+  };
+}
+
+export function decodeSnapshot(e: EncodedSnapshot, bambooCount: number): Snapshot {
+  const survivors: SurvivorSnap[] = (e.s ?? []).map((a) => ({
+    id: str(a[0]),
+    x: n(a[1]),
+    y: n(a[2]),
+    z: n(a[3]),
+    rot: n(a[4]),
+    speed: n(a[5]),
+    attackT: n(a[6]),
+    dashing: (n(a[7]) & 1) !== 0,
+    inWater: (n(a[7]) & 2) !== 0,
+    hidden: (n(a[7]) & 4) !== 0,
+    hp: n(a[8]),
+    state: SURVIVOR_STATES[n(a[9])] ?? 'active',
+    weapon: WEAPON_TYPES[n(a[10])] ?? 'knife',
+    ammo: n(a[11]),
+    bleed: n(a[12]),
+    revive: n(a[13]),
+    hurt: n(a[14]),
+    kills: n(a[15]),
+  }));
+  const zombies: ZombieSnap[] = (e.z ?? []).map((a) => ({
+    id: n(a[0]),
+    x: n(a[1]),
+    y: n(a[2]),
+    z: n(a[3]),
+    rot: n(a[4]),
+    speed: n(a[5]),
+    state: ZOMBIE_STATES[n(a[6])] ?? 'walk',
+    t: n(a[7]),
+    look: n(a[8]),
+    hurt: n(a[9]),
+    from: str(a[10]) || null,
+  }));
+  const javelins: JavelinSnap[] = (e.j ?? []).map((a) => ({
+    id: n(a[0]),
+    x: n(a[1]),
+    y: n(a[2]),
+    z: n(a[3]),
+    yaw: n(a[4]),
+    pitch: n(a[5]),
+    flying: a[6] === 1,
+  }));
+  const bamboo: boolean[] = [];
+  for (let i = 0; i < bambooCount; i++) bamboo.push((n(e.b) & (1 << i)) !== 0);
+  return {
+    tick: n(e.k),
+    timeLeft: n(e.tl),
+    phase: PHASES[n(e.ph)] ?? 'playing',
+    rescued: n(e.r),
+    survivors,
+    zombies,
+    javelins,
+    bamboo,
+    racks: (e.rk ?? []).map((w) => WEAPON_TYPES[w] ?? 'knife'),
+    events: Array.isArray(e.e) ? e.e : [],
+  };
+}

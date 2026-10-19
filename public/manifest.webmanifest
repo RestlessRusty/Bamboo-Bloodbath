@@ -1,0 +1,12 @@
+{
+  "name": "Bamboo Bloodbath",
+  "short_name": "Bamboo Bloodbath",
+  "description": "Cute pandas vs zombie pandas: co-op survival.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#bfe8f7",
+  "theme_color": "#7cc35a",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
