@@ -1,9 +1,10 @@
 import { clamp } from '../core/math';
+import type { MapRef } from '../sim/mapLayout';
 import { PANDA_VARIANTS, WEAPON_TYPES, type PandaVariant, type PlayerInput, type PlayerSpec, type WeaponType } from '../sim/types';
 import type { EncodedSnapshot } from './codec';
 
 /** Bump when messages change so old and new versions refuse to mix. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** Room code "K7QX" becomes PeerJS id "bamboo-bloodbath-v1-K7QX" for the host. */
 export const PEER_PREFIX = 'bamboo-bloodbath-v1-';
@@ -39,8 +40,10 @@ export type ClientMsg =
 export type HostMsg =
   | { t: 'welcome'; id: string }
   | { t: 'reject'; reason: string }
-  | { t: 'lobby'; players: LobbyPlayer[]; bots: number }
-  | { t: 'start'; specs: PlayerSpec[] }
+  /** `map` is the host's pick (a map id or "random"). */
+  | { t: 'lobby'; players: LobbyPlayer[]; bots: number; map: string }
+  /** `map` is the concrete map everyone builds for this match. */
+  | { t: 'start'; specs: PlayerSpec[]; map: MapRef }
   | { t: 'snap'; s: EncodedSnapshot }
   | { t: 'bye'; reason: string };
 

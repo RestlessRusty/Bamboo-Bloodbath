@@ -1,6 +1,6 @@
-import { lerp } from '../core/math';
 import { Rng } from '../core/rng';
 import type { Circle, MapLayout } from './mapLayout';
+import type { Route } from './route';
 import type { Terrain } from './terrain';
 import type { WeaponType } from './types';
 
@@ -76,17 +76,24 @@ const RACK_WEAPONS: readonly WeaponType[] = ['axe', 'javelin', 'knife', 'axe', '
 const dist = (x: number, z: number, c: { x: number; z: number }) => Math.hypot(x - c.x, z - c.z);
 
 /** Deterministically scatters everything that lives on the map. */
-export function generateProps(layout: MapLayout, terrain: Terrain): MapProps {
+export function generateProps(layout: MapLayout, terrain: Terrain, route: Route): MapProps {
   const rng = new Rng(layout.seed);
   const half = layout.size / 2;
-  const { start, goal, pond, hill, thickets } = layout;
+  const { start, goal, ponds, hills, thickets, density, theme } = layout;
   const solids: Circle[] = [];
 
+  const nearPond = (x: number, z: number, gap: number) => ponds.some((p) => dist(x, z, p) < p.r + gap);
+  const nearHilltop = (x: number, z: number, gap: number) => hills.some((h) => dist(x, z, h) < gap);
+  const nearCrossing = (x: number, z: number, gap: number) =>
+    terrain.crossings.some((c) => dist(x, z, c.a) < gap || dist(x, z, c.b) < gap);
   const keepClear = (x: number, z: number) =>
     dist(x, z, start) < start.r + 4 ||
     dist(x, z, goal) < goal.r + 4 ||
-    dist(x, z, pond) < pond.r + 2.5 ||
-    dist(x, z, hill) < 6 ||
+    nearPond(x, z, 2.5) ||
+    terrain.nearRiver(x, z, 2.5) ||
+    nearCrossing(x, z, 5) ||
+    terrain.ridgeAmount(x, z) > 0.02 ||
+    nearHilltop(x, z, 6) ||
     thickets.some((t) => dist(x, z, t) < t.r + 1.5);
   const spaced = (x: number, z: number, gap: number) => solids.every((s) => dist(x, z, s) >= s.r + gap);
   const randomPoint = (margin: number) => ({
@@ -94,17 +101,23 @@ export function generateProps(layout: MapLayout, terrain: Terrain): MapProps {
     z: rng.range(-half + margin, half - margin),
   });
   const pickupSpotOk = (x: number, z: number) =>
-    Math.abs(x) < half - 4 && Math.abs(z) < half - 4 && dist(x, z, pond) > pond.r + 1.5 && !terrain.isWater(x, z);
+    Math.abs(x) < half - 4 &&
+    Math.abs(z) < half - 4 &&
+    !nearPond(x, z, 1.5) &&
+    !terrain.nearRiver(x, z, 1.5) &&
+    !nearCrossing(x, z, 3) &&
+    terrain.ridgeAmount(x, z) < 0.02 &&
+    !terrain.isWet(x, z);
 
-  // Weapon racks spread along the route, alternating sides of the start→goal diagonal.
+  // Weapon racks spread along the route, alternating sides of it.
   const racks: RackProp[] = [];
   RACK_WEAPONS.forEach((weapon, i) => {
-    const f = 0.15 + (i / (RACK_WEAPONS.length - 1)) * 0.7;
+    const p = route.at(0.15 + (i / (RACK_WEAPONS.length - 1)) * 0.7);
     for (let tries = 0; tries < 40; tries++) {
       const side = (i % 2 ? 1 : -1) * rng.range(6, 16);
-      const x = lerp(start.x, goal.x, f) + side * Math.SQRT1_2 + rng.range(-3, 3);
-      const z = lerp(start.z, goal.z, f) + side * Math.SQRT1_2 + rng.range(-3, 3);
-      if (!pickupSpotOk(x, z) || dist(x, z, hill) < 5 || thickets.some((t) => dist(x, z, t) < t.r + 1)) continue;
+      const x = p.x - side * p.dz + rng.range(-3, 3);
+      const z = p.z + side * p.dx + rng.range(-3, 3);
+      if (!pickupSpotOk(x, z) || nearHilltop(x, z, 5) || thickets.some((t) => dist(x, z, t) < t.r + 1)) continue;
       racks.push({ x, y: terrain.heightAt(x, z), z, weapon });
       solids.push({ x, z, r: 1.4 });
       break;
@@ -129,7 +142,7 @@ export function generateProps(layout: MapLayout, terrain: Terrain): MapProps {
   }
 
   const trees: TreeProp[] = [];
-  for (let i = 0; i < 4000 && trees.length < 150; i++) {
+  for (let i = 0; i < density.trees * 27 && trees.length < density.trees; i++) {
     const { x, z } = randomPoint(3);
     if (keepClear(x, z) || !spaced(x, z, 4.2)) continue;
     const scale = rng.range(0.8, 1.3);
@@ -140,7 +153,7 @@ export function generateProps(layout: MapLayout, terrain: Terrain): MapProps {
       z,
       scale,
       rot: rng.range(0, Math.PI * 2),
-      kind: rng.next() < 0.35 ? 'pine' : 'round',
+      kind: rng.next() < theme.pineShare ? 'pine' : 'round',
       tint: rng.next(),
       radius,
       collide: true,
@@ -149,7 +162,7 @@ export function generateProps(layout: MapLayout, terrain: Terrain): MapProps {
   }
 
   const rocks: RockProp[] = [];
-  for (let i = 0; i < 2000 && rocks.length < 45; i++) {
+  for (let i = 0; i < density.rocks * 45 && rocks.length < density.rocks; i++) {
     const { x, z } = randomPoint(3);
     if (keepClear(x, z) || !spaced(x, z, 3)) continue;
     const scale = rng.range(0.5, 1.4);
@@ -165,7 +178,7 @@ export function generateProps(layout: MapLayout, terrain: Terrain): MapProps {
       const x = gx + rng.range(-1.8, 1.8);
       const z = gz + rng.range(-1.8, 1.8);
       const edge = Math.max(Math.abs(x), Math.abs(z));
-      if (edge < half + 1.5 || edge > half + 22) continue;
+      if (edge < half + 1.5 || edge > half + 22 || terrain.nearRiver(x, z, 2) || terrain.ridgeAmount(x, z) > 0.1) continue;
       const scale = rng.range(1, 1.5);
       trees.push({
         x,
@@ -173,7 +186,7 @@ export function generateProps(layout: MapLayout, terrain: Terrain): MapProps {
         z,
         scale,
         rot: rng.range(0, Math.PI * 2),
-        kind: rng.next() < 0.5 ? 'pine' : 'round',
+        kind: rng.next() < (1 + theme.pineShare) / 2 ? 'pine' : 'round',
         tint: rng.next(),
         radius: 0.38 * scale,
         collide: false,
@@ -201,41 +214,49 @@ export function generateProps(layout: MapLayout, terrain: Terrain): MapProps {
     }
   }
 
-  const dry = (y: number) => y > terrain.waterLevel + 0.05;
+  // Grass and flowers: not in water, on ice or up the rock faces.
+  const plantable = (x: number, z: number, y: number) =>
+    y > terrain.waterLevel + 0.05 && terrain.ridgeAmount(x, z) < 0.3 && !terrain.isIce(x, z);
 
   const grass: DecorProp[] = [];
-  for (let i = 0; i < 1200; i++) {
+  for (let i = 0; i < density.grass; i++) {
     const { x, z } = randomPoint(1);
     const y = terrain.heightAt(x, z);
-    if (!dry(y)) continue;
+    if (!plantable(x, z, y)) continue;
     grass.push({ x, y, z, scale: rng.range(0.7, 1.4), rot: rng.range(0, Math.PI * 2), tint: rng.next() });
   }
 
   const flowers: DecorProp[] = [];
-  for (let c = 0; c < 45; c++) {
+  for (let c = 0; c < density.flowerPatches; c++) {
     const center = randomPoint(4);
     const tint = rng.next();
     for (let i = 0; i < 9; i++) {
       const x = center.x + rng.range(-2.5, 2.5);
       const z = center.z + rng.range(-2.5, 2.5);
       const y = terrain.heightAt(x, z);
-      if (!dry(y)) continue;
+      if (!plantable(x, z, y)) continue;
       flowers.push({ x, y, z, scale: rng.range(0.8, 1.2), rot: 0, tint });
     }
   }
 
   const lilies: DecorProp[] = [];
-  for (let i = 0; i < 9; i++) {
-    const a = rng.range(0, Math.PI * 2);
-    const d = Math.sqrt(rng.next()) * pond.r * 0.65;
-    lilies.push({
-      x: pond.x + Math.cos(a) * d,
-      y: terrain.waterLevel,
-      z: pond.z + Math.sin(a) * d,
-      scale: rng.range(0.7, 1.2),
-      rot: rng.range(0, Math.PI * 2),
-      tint: rng.next(),
-    });
+  if (theme.lilies.length) {
+    for (const pond of ponds) {
+      if (pond.frozen) continue;
+      const count = Math.round(pond.r * 0.9);
+      for (let i = 0; i < count; i++) {
+        const a = rng.range(0, Math.PI * 2);
+        const d = Math.sqrt(rng.next()) * pond.r * 0.65;
+        lilies.push({
+          x: pond.x + Math.cos(a) * d,
+          y: terrain.waterLevel,
+          z: pond.z + Math.sin(a) * d,
+          scale: rng.range(0.7, 1.2),
+          rot: rng.range(0, Math.PI * 2),
+          tint: rng.next(),
+        });
+      }
+    }
   }
 
   return { trees, rocks, stalks, grass, flowers, lilies, bambooSpots, racks };

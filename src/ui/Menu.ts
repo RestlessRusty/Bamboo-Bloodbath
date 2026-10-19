@@ -1,7 +1,9 @@
+import { cyclePick } from '../game/maps';
 import { PANDA_LOOKS } from '../render/pandaModel';
 import type { Settings } from '../settings';
 import { PANDA_VARIANTS, type WeaponType } from '../sim/types';
 import { el } from './dom';
+import { MapPicker } from './MapPicker';
 
 export interface MenuHandlers {
   onPlaySolo(): void;
@@ -9,12 +11,15 @@ export interface MenuHandlers {
   onSettings(): void;
   /** Panda or weapon changed: update the 3D preview. */
   onPreview(): void;
+  /** Map choice changed: show that map behind the menu. */
+  onMapPreview(): void;
   /** Anything changed: persist settings. */
   onChange(): void;
 }
 
 export class Menu {
   private readonly el: HTMLDivElement;
+  private readonly mapPicker: MapPicker;
 
   constructor(
     parent: HTMLElement,
@@ -54,6 +59,7 @@ export class Menu {
             <button data-act="bots" data-v="3">3</button>
           </div>
         </div>
+        <div data-ref="map"></div>
         <div class="menu-buttons">
           <button class="btn primary big" data-act="solo">Play solo</button>
           <button class="btn" data-act="multi">Multiplayer</button>
@@ -63,6 +69,15 @@ export class Menu {
       </div>`,
     );
     parent.appendChild(this.el);
+
+    this.mapPicker = new MapPicker((dir) => {
+      settings.map = cyclePick(settings.map, dir);
+      this.mapPicker.set(settings.map, true);
+      h.onChange();
+      h.onMapPreview();
+    });
+    this.ref('map').replaceWith(this.mapPicker.el);
+    this.mapPicker.set(settings.map, true);
 
     const name = this.ref<HTMLInputElement>('name');
     name.value = settings.nickname;
@@ -112,6 +127,7 @@ export class Menu {
 
   show(message = ''): void {
     this.ref('toast').textContent = message;
+    this.mapPicker.set(this.settings.map, true); // may have changed in a lobby
     this.el.hidden = false;
   }
 

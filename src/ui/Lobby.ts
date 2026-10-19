@@ -3,12 +3,15 @@ import { CODE_LENGTH, normalizeCode, type LobbyPlayer } from '../net/protocol';
 import { PANDA_LOOKS } from '../render/pandaModel';
 import { WEAPONS } from '../sim/weapons';
 import { el } from './dom';
+import { MapPicker } from './MapPicker';
 
 export interface LobbyHandlers {
   onCreate(): void;
   onJoin(code: string): void;
   onStart(): void;
   onBots(n: number): void;
+  /** Host cycles the map choice. */
+  onMap(dir: number): void;
   /** Leave the room (or the multiplayer screen) and return to the main menu. */
   onLeave(): void;
 }
@@ -17,6 +20,8 @@ export interface RoomView {
   code: string;
   players: readonly LobbyPlayer[];
   bots: number;
+  /** Map id or "random". */
+  mapPick: string;
   isHost: boolean;
   myId: string;
 }
@@ -27,6 +32,7 @@ export class Lobby {
   private readonly choose: HTMLElement;
   private readonly busy: HTMLElement;
   private readonly room: HTMLElement;
+  private readonly mapPicker: MapPicker;
 
   constructor(
     parent: HTMLElement,
@@ -54,6 +60,7 @@ export class Lobby {
       <div class="card lobby-card" data-ref="room" hidden>
         <p class="hint">Room code</p>
         <div class="room-code" data-ref="room-code"></div>
+        <div data-ref="map"></div>
         <ul class="player-list" data-ref="players"></ul>
         <div class="picker" data-ref="bots-row">
           <span>Bot buddies</span>
@@ -69,6 +76,8 @@ export class Lobby {
     this.choose = this.ref('choose');
     this.busy = this.ref('busy');
     this.room = this.ref('room');
+    this.mapPicker = new MapPicker((dir) => h.onMap(dir));
+    this.ref('map').replaceWith(this.mapPicker.el);
 
     const code = this.ref<HTMLInputElement>('code');
     code.addEventListener('input', () => {
@@ -123,6 +132,7 @@ export class Lobby {
     this.busy.hidden = true;
     this.room.hidden = false;
     this.ref('room-code').textContent = v.code;
+    this.mapPicker.set(v.mapPick, v.isHost);
 
     const list = this.ref('players');
     list.innerHTML = '';

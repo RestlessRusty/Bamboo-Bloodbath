@@ -1,4 +1,5 @@
 import { DOWNED, JAVELIN, SURVIVOR } from '../config';
+import type { Route } from '../sim/route';
 import type { PlayerSpec, Snapshot, SurvivorSnap } from '../sim/types';
 import { el, formatTime } from './dom';
 
@@ -48,12 +49,9 @@ export class Hud {
   private total = 1;
   private msgTimer = 0;
   private time = 0;
+  private route: Route | null = null;
 
-  constructor(
-    parent: HTMLElement,
-    private readonly goal: { x: number; z: number },
-    h: HudHandlers,
-  ) {
+  constructor(parent: HTMLElement, h: HudHandlers) {
     this.el = el(
       'div',
       'hud',
@@ -135,6 +133,11 @@ export class Hud {
     });
   }
 
+  /** The way to the rescue hut on this match's map: the arrow points along it. */
+  setRoute(route: Route): void {
+    this.route = route;
+  }
+
   setTeam(specs: readonly PlayerSpec[], localId: string): void {
     this.localId = localId;
     this.total = specs.length;
@@ -197,14 +200,16 @@ export class Hud {
     this.updateRevive(snap, me);
 
     const active = me?.state === 'active';
-    this.goalBox.hidden = !me;
-    if (me) {
-      const dx = this.goal.x - me.x;
-      const dz = this.goal.z - me.z;
+    this.goalBox.hidden = !me || !this.route;
+    if (me && this.route) {
+      // Point at the next waypoint (a pass, say) and show the distance left along the way.
+      const { next, remaining } = this.route.locate(me.x, me.z);
+      const dx = next.x - me.x;
+      const dz = next.z - me.z;
       // Screen up is -Z, screen right is +X.
       this.arrow.style.transform = `rotate(${Math.atan2(dx, -dz)}rad)`;
       this.arrow.style.visibility = active ? 'visible' : 'hidden';
-      this.setText(this.dist, active ? `${Math.round(Math.hypot(dx, dz))} m` : '');
+      this.setText(this.dist, active ? `${Math.round(remaining)} m` : '');
       this.setText(this.saved, this.total > 1 ? `🏠 ${snap.rescued}/${this.total}` : '');
     }
 

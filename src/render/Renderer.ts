@@ -9,9 +9,10 @@ import { HordeView } from './horde';
 import { NameTag } from './nameTag';
 import { PANDA_LOOKS, PandaModel } from './pandaModel';
 import { PickupsView } from './pickups';
+import { Snowfall } from './snowfall';
+import { disposeObject } from './toon';
 import { buildWorld, type WorldView } from './world';
 
-const SKY = 0xbfe8f7;
 const RIPPLE_GEO = new THREE.RingGeometry(0.45, 0.62, 24).rotateX(-Math.PI / 2);
 const ZOMBIE_LOOKS = [0xffffff, 0xe6f0d8, 0xf0e6dc, 0xdde6ea];
 
@@ -27,9 +28,13 @@ export class Renderer {
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(CAMERA.fov, 1, 0.5, 260);
   private readonly sun = new THREE.DirectionalLight(0xfff1d6, 2.4);
-  private readonly world: WorldView;
+  private readonly hemi = new THREE.HemisphereLight(0xeaf7ff, 0x6f8f4a, 1.7);
+  private readonly fog = new THREE.Fog(0xbfe8f7, 55, 130);
+  private map: GameMap;
+  private world: WorldView;
   private readonly horde = new HordeView();
-  private readonly pickups: PickupsView;
+  private pickups: PickupsView;
+  private snow: Snowfall | null = null;
   private readonly views = new Map<string, SurvivorView>();
   private readonly zombieTags = new Map<number, NameTag>();
   private specs = new Map<string, PlayerSpec>();
@@ -43,18 +48,15 @@ export class Renderer {
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
 
-  constructor(
-    container: HTMLElement,
-    private readonly map: GameMap,
-    quality: Quality,
-  ) {
+  constructor(container: HTMLElement, map: GameMap, quality: Quality) {
     this.gl = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.gl.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(this.gl.domElement);
 
-    this.scene.background = new THREE.Color(SKY);
-    this.scene.fog = new THREE.Fog(SKY, 55, 130);
-    this.scene.add(new THREE.HemisphereLight(0xeaf7ff, 0x6f8f4a, 1.7));
+    this.map = map;
+    this.scene.background = new THREE.Color();
+    this.scene.fog = this.fog;
+    this.scene.add(this.hemi);
 
     const shadow = this.sun.shadow;
     shadow.mapSize.set(1024, 1024);
@@ -73,9 +75,55 @@ export class Renderer {
     this.pickups = new PickupsView(map);
     this.effects = new Effects(map.terrain);
     this.scene.add(this.world.group, this.pickups.group, this.horde.group, this.effects.group);
+    this.applyTheme();
 
     this.setQuality(quality);
     window.addEventListener('resize', () => this.resize());
+  }
+
+  get currentMap(): GameMap {
+    return this.map;
+  }
+
+  /** Swap the whole world for another map (between matches). */
+  setMap(map: GameMap): void {
+    if (map === this.map) return;
+    this.clearPlayers();
+    this.scene.remove(this.world.group, this.pickups.group);
+    disposeObject(this.world.group);
+    disposeObject(this.pickups.group);
+
+    this.map = map;
+    this.world = buildWorld(map);
+    this.pickups = new PickupsView(map);
+    this.effects.reset(map.terrain);
+    this.scene.add(this.world.group, this.pickups.group);
+    this.applyTheme();
+
+    if (this.showcase) this.placeShowcase(this.showcase);
+    this.snapCamera = true;
+  }
+
+  private applyTheme(): void {
+    const t = this.map.layout.theme;
+    (this.scene.background as THREE.Color).setHex(t.sky);
+    this.fog.color.setHex(t.sky);
+    this.fog.near = t.fogNear;
+    this.fog.far = t.fogFar;
+    this.hemi.color.setHex(t.hemiSky);
+    this.hemi.groundColor.setHex(t.hemiGround);
+    this.hemi.intensity = t.hemiIntensity;
+    this.sun.color.setHex(t.sun);
+    this.sun.intensity = t.sunIntensity;
+
+    if (t.snowfall && !this.snow) {
+      this.snow = new Snowfall();
+      this.scene.add(this.snow.points);
+    } else if (!t.snowfall && this.snow) {
+      this.scene.remove(this.snow.points);
+      this.snow.dispose();
+      this.snow = null;
+    }
   }
 
   setQuality(quality: Quality): void {
@@ -200,6 +248,7 @@ export class Renderer {
       this.updateCamera(dt, goal.x, this.map.terrain.heightAt(goal.x, goal.z), goal.z);
     }
     this.world.update(dt, this.time);
+    this.snow?.update(dt, this.time, this.focus.x, this.focus.y, this.focus.z);
   }
 
   /** Last rendered position of the local panda (for tap-to-move). */
@@ -274,9 +323,9 @@ export class Renderer {
     const k = this.snapCamera ? 1 : damp(CAMERA.follow, dt);
     this.focus.set(lerp(this.focus.x, fx, k), lerp(this.focus.y, fy, k), lerp(this.focus.z, fz, k));
 
-    // Zoom out on the hill so you can see further.
-    const { hill } = this.map.layout;
-    const want = CAMERA.distance * (1 + CAMERA.hillZoom * clamp((fy - 1) / (hill.h - 1), 0, 1));
+    // Zoom out on hills so you can see further.
+    const peak = this.map.terrain.peak();
+    const want = peak > 2 ? CAMERA.distance * (1 + CAMERA.hillZoom * clamp((fy - 1) / (peak - 1), 0, 1)) : CAMERA.distance;
     this.camDist = this.snapCamera ? want : lerp(this.camDist, want, damp(2.5, dt));
     this.snapCamera = false;
 
@@ -302,11 +351,15 @@ export class Renderer {
 
   setShowcase(variant: PandaVariant, weapon: WeaponType): void {
     this.clearShowcase();
-    const { start } = this.map.layout;
     const m = new PandaModel(variant, weapon);
-    m.root.position.set(start.x, this.map.terrain.heightAt(start.x, start.z), start.z);
+    this.placeShowcase(m);
     this.scene.add(m.root);
     this.showcase = m;
+  }
+
+  private placeShowcase(m: PandaModel): void {
+    const { start } = this.map.layout;
+    m.root.position.set(start.x, this.map.terrain.heightAt(start.x, start.z), start.z);
   }
 
   clearShowcase(): void {
@@ -323,6 +376,7 @@ export class Renderer {
 
     const yaw = 0.55;
     const p = m.root.position;
+    this.snow?.update(dt, this.time, p.x, p.y, p.z);
     m.root.rotation.y = yaw + Math.sin(this.time * 0.6) * 0.5;
     const cycle = this.time % 4;
     m.update(dt, { speed: 0, attackT: cycle > 3 && cycle < 3.6 ? (cycle - 3) / 0.6 : -1, dashing: false, downed: false, hurt: 0 });

@@ -22,7 +22,8 @@ export interface EncodedSnapshot {
   s: (string | number)[][];
   z: (string | number)[][];
   j: number[][];
-  b: number;
+  /** Bamboo snacks as "1"/"0" per spot (any number of spots). */
+  b: string;
   rk: number[];
   e: GameEvent[];
 }
@@ -37,10 +38,7 @@ const n = (v: unknown) => (typeof v === 'number' ? v : 0);
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 
 export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
-  let bamboo = 0;
-  s.bamboo.forEach((on, i) => {
-    if (on) bamboo |= 1 << i;
-  });
+  const bamboo = s.bamboo.map((on) => (on ? '1' : '0')).join('');
   return {
     k: s.tick,
     tl: r2(s.timeLeft),
@@ -84,7 +82,7 @@ export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
   };
 }
 
-export function decodeSnapshot(e: EncodedSnapshot, bambooCount: number): Snapshot {
+export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
   const survivors: SurvivorSnap[] = (e.s ?? []).map((a) => ({
     id: str(a[0]),
     x: n(a[1]),
@@ -127,8 +125,7 @@ export function decodeSnapshot(e: EncodedSnapshot, bambooCount: number): Snapsho
     pitch: n(a[5]),
     flying: a[6] === 1,
   }));
-  const bamboo: boolean[] = [];
-  for (let i = 0; i < bambooCount; i++) bamboo.push((n(e.b) & (1 << i)) !== 0);
+  const bamboo = Array.from(str(e.b), (c) => c === '1');
   return {
     tick: n(e.k),
     timeLeft: n(e.tl),

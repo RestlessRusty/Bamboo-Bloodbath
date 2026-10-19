@@ -9,6 +9,8 @@ export interface Settings {
   weapon: WeaponType;
   /** Bot buddies in single player (0–3). */
   bots: number;
+  /** Map choice for solo and for rooms you host: a map id or "random". */
+  map: string;
   controls: ControlScheme;
   quality: Quality;
   sound: boolean;
@@ -25,6 +27,7 @@ const DEFAULTS: Settings = {
   variant: 'giant',
   weapon: 'knife',
   bots: 1,
+  map: 'valley',
   controls: 'joystick',
   quality: 'high',
   sound: true,

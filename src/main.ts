@@ -2,6 +2,7 @@ import './style.css';
 import { Sfx } from './audio/Sfx';
 import { MATCH_TIME } from './config';
 import { LocalGame } from './game/LocalGame';
+import { cyclePick, hutDirection, isMapRef, isValidPick, loadMap, previewMap, resolvePick } from './game/maps';
 import { RemoteGame } from './game/RemoteGame';
 import type { GameContext, Session } from './game/Session';
 import { InputManager } from './input/InputManager';
@@ -11,8 +12,8 @@ import type { LobbyPlayer } from './net/protocol';
 import { Renderer } from './render/Renderer';
 import { loadSettings, saveSettings } from './settings';
 import { botName } from './sim/bots';
-import { createGameMap } from './sim/gameMap';
-import { NATURE_MAP } from './sim/mapLayout';
+import type { MapRef } from './sim/mapLayout';
+import { DEFAULT_MAP, refOf } from './sim/maps';
 import { initPhysics } from './sim/physics';
 import { PANDA_VARIANTS, WEAPON_TYPES, type PlayerSpec, type Snapshot } from './sim/types';
 import { el, formatTime } from './ui/dom';
@@ -47,8 +48,8 @@ const appEl = document.getElementById('app')!;
 const uiEl = document.getElementById('ui')!;
 
 const settings = loadSettings();
-const map = createGameMap(NATURE_MAP);
-const renderer = new Renderer(appEl, map, settings.quality);
+if (!isValidPick(settings.map)) settings.map = DEFAULT_MAP.id;
+const renderer = new Renderer(appEl, previewMap(settings.map) ?? loadMap(refOf(DEFAULT_MAP)), settings.quality);
 const physicsReady = initPhysics();
 const sfx = new Sfx();
 sfx.setEnabled(settings.sound, settings.music);
@@ -75,7 +76,7 @@ input.setFlipTilt(settings.flipTilt);
 
 const settingsPanel = new SettingsPanel(uiEl, settings, onSettingChanged, () => input.calibrateTilt());
 
-const hud = new Hud(uiEl, map.layout.goal, {
+const hud = new Hud(uiEl, {
   onPause: () => setPaused(true),
   onResume: () => setPaused(false),
   onSettings: () => settingsPanel.open(),
@@ -93,6 +94,7 @@ const menu = new Menu(uiEl, settings, {
   },
   onSettings: () => settingsPanel.open(),
   onPreview: () => renderer.setShowcase(settings.variant, settings.weapon),
+  onMapPreview: () => showMenuMap(),
   onChange: () => saveSettings(settings),
 });
 
@@ -101,10 +103,16 @@ const lobby = new Lobby(uiEl, {
   onJoin: (code) => void joinRoom(code),
   onStart: () => void hostStart(),
   onBots: (n) => host?.setBots(n),
+  onMap: (dir) => {
+    if (!host) return;
+    settings.map = cyclePick(host.mapPick, dir);
+    saveSettings(settings);
+    host.setMap(settings.map);
+  },
   onLeave: () => leaveToMenu(),
 });
 
-const ctx: GameContext = { map, renderer, input, hud, sfx, settings };
+const ctx: GameContext = { renderer, input, hud, sfx, settings };
 
 renderer.setShowcase(settings.variant, settings.weapon);
 
@@ -116,6 +124,13 @@ function onSettingChanged(key: SettingKey): void {
   if (key === 'controls') input.setScheme(settings.controls);
   if (key === 'flipTilt') input.setFlipTilt(settings.flipTilt);
   if (key === 'sound' || key === 'music') sfx.setEnabled(settings.sound, settings.music);
+}
+
+/** Behind the menu: the chosen map's camp ("random" keeps whatever is showing). */
+function showMenuMap(): void {
+  const map = previewMap(settings.map);
+  if (map) renderer.setMap(map);
+  renderer.setShowcase(settings.variant, settings.weapon);
 }
 
 function unlockAudio(): void {
@@ -179,16 +194,26 @@ function clearSession(): void {
   session = null;
 }
 
-function enterGame(create: () => Session): void {
+function enterGame(mapRef: MapRef, create: () => Session): void {
   clearSession();
   renderer.clearShowcase();
+  const map = loadMap(mapRef);
+  renderer.setMap(map);
+  hud.setRoute(map.route);
   menu.hide();
   lobby.hide();
   hud.show();
   session = create();
   input.setEnabled(true);
   void requestWakeLock();
-  hud.flash('Reach the rescue hut in the far corner!', 3500);
+  hud.flash(`${map.layout.name}: reach the rescue hut to the ${hutDirection(map.layout)}!`, 3500);
+  const { tip } = map.layout;
+  const started = session;
+  if (tip) {
+    window.setTimeout(() => {
+      if (started && session === started && !started.isOver) hud.flash(tip, 4500);
+    }, 3800);
+  }
 }
 
 async function startSolo(): Promise<void> {
@@ -201,7 +226,7 @@ async function startSolo(): Promise<void> {
     { id: 'p1', name: nickname(), variant: settings.variant, weapon: settings.weapon, bot: false },
     ...botSpecs(settings.bots),
   ];
-  enterGame(() => new LocalGame(ctx, specs, localId, onGameEnd));
+  enterGame(resolvePick(settings.map), () => new LocalGame(ctx, specs, localId, onGameEnd));
 }
 
 function onGameEnd(snap: Snapshot): void {
@@ -240,7 +265,7 @@ function leaveToMenu(message = ''): void {
   hud.hide();
   lobby.hide();
   releaseWakeLock();
-  renderer.setShowcase(settings.variant, settings.weapon);
+  showMenuMap();
   menu.show(message);
 }
 
@@ -251,15 +276,18 @@ document.addEventListener('visibilitychange', () => {
 // ------------------------------------------------------------------ multiplayer
 
 function showRoom(): void {
-  if (host) lobby.showRoom({ code: host.code, players: host.players, bots: host.bots, isHost: true, myId: 'p1' });
-  else if (client) lobby.showRoom({ code: client.code, players: client.players, bots: client.bots, isHost: false, myId: client.myId });
+  if (host) {
+    lobby.showRoom({ code: host.code, players: host.players, bots: host.bots, mapPick: host.mapPick, isHost: true, myId: 'p1' });
+  } else if (client) {
+    lobby.showRoom({ code: client.code, players: client.players, bots: client.bots, mapPick: client.mapPick, isHost: false, myId: client.myId });
+  }
 }
 
 async function createRoom(): Promise<void> {
   const token = ++netToken;
   lobby.showBusy('Creating room…');
   try {
-    const h = await NetHost.create(profile());
+    const h = await NetHost.create(profile(), settings.map);
     if (token !== netToken) {
       h.close();
       return;
@@ -284,7 +312,7 @@ async function joinRoom(code: string): Promise<void> {
   const token = ++netToken;
   lobby.showBusy(`Joining room ${code}…`);
   try {
-    const c = await NetClient.join(code, profile(), map.props.bambooSpots.length);
+    const c = await NetClient.join(code, profile());
     if (token !== netToken) {
       c.close();
       return;
@@ -300,10 +328,12 @@ async function joinRoom(code: string): Promise<void> {
       }
       showRoom();
     };
-    c.onStart = (specs) => {
+    c.onStart = (specs, mapRef) => {
       mode = 'guest';
       localId = c.myId;
-      enterGame(() => new RemoteGame(ctx, specs, c.myId, onGameEnd, c));
+      // Same protocol version means the same maps, so this fallback should never be needed.
+      const ref = isMapRef(mapRef) ? mapRef : refOf(DEFAULT_MAP);
+      enterGame(ref, () => new RemoteGame(ctx, specs, c.myId, onGameEnd, c));
     };
     c.onSnapshot = (snap) => {
       if (session instanceof RemoteGame) session.receive(snap);
@@ -325,8 +355,9 @@ async function hostStart(): Promise<void> {
   const specs: PlayerSpec[] = [...h.players.map((p) => ({ ...p, bot: false })), ...botSpecs(h.bots)];
   mode = 'host';
   localId = 'p1';
-  h.start(specs);
-  enterGame(() => new LocalGame(ctx, specs, localId, onGameEnd, h));
+  const mapRef = resolvePick(h.mapPick);
+  h.start(specs, mapRef);
+  enterGame(mapRef, () => new LocalGame(ctx, specs, localId, onGameEnd, h));
 }
 
 function hostBackToLobby(): void {

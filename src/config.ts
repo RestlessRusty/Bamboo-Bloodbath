@@ -12,6 +12,8 @@ export const MAX_PLAYERS = 4;
 export const MATCH_TIME = 390; // 6:30
 export const GRAVITY = -24;
 export const GOAL_RADIUS = 4.5;
+/** Fraction of normal acceleration on ice (frozen ponds): everyone slides. */
+export const ICE_GRIP = 0.2;
 
 export const SURVIVOR = {
   radius: 0.4,
@@ -33,6 +35,8 @@ export const ZOMBIE = {
   hp: 40,
   speed: 2.9,
   wanderSpeed: 0.9,
+  /** Speed multiplier while wading through shallow water (fords). Deep water stops zombies. */
+  wadeSpeedMul: 0.6,
   accel: 18,
   turnSpeed: 8,
   /** How far zombies notice a survivor, and how close when the survivor hides in bamboo. */

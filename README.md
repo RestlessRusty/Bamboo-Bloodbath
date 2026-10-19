@@ -39,10 +39,15 @@ On the phone, open the URL and use the browser's *Add to Home screen* to install
 
 ## How to play
 
+- Pick a **map** in the menu: Bamboo Valley, River Crossing, Snowy Pass, or **Random Valley** (a new
+  generated layout every match). *Random* picks any of them. In multiplayer the host picks.
 - Walk from the camp to the **rescue hut** (follow the yellow arrow and the light beam) before the
-  6:30 timer runs out. The match is won if at least one panda makes it.
+  6:30 timer runs out. The arrow follows the map's route, e.g. through passes. The match is won if at least one panda makes it.
 - **Zombie pandas** wander the valley and chase anyone within ~16 m. More appear the further you get.
-  They bite, sometimes lunge, and **can't swim**: the pond is a safe (but slow) spot.
+  They bite, sometimes lunge, and **can't swim**: ponds and rivers are safe (but slow) spots.
+  They cross rivers only on bridges and at shallow fords, where everyone wades slowly.
+- **Ridges** (Snowy Pass) can't be climbed: go through the passes, where the arrow leads, or squeeze
+  through a narrow shortcut. **Frozen ponds** are walkable but slippery for everyone.
 - **Bamboo thickets** hide you: zombies only notice you when they're very close (attacking reveals you).
 - **Bamboo snacks** (glowing green) heal 35 HP and grow back after a while.
 - **Weapon racks** (glowing yellow): walk into one to swap your weapon for the one on the rack.
@@ -89,14 +94,20 @@ src/
     bots.ts            bot buddy AI
     entities.ts        internal entity types
     steering.ts        obstacle lookup for steering
-    mapLayout.ts       hand-authored map layout (start, goal, hill, pond, bamboo)
-    terrain.ts         height field + terrain grid
+    mapLayout.ts       map layout format: start, hut, route, hills, ponds, rivers, ridges, bamboo, density, theme
+    maps/              the maps themselves (one file each), randomValley.ts (layout generator),
+                       and the list in index.ts
+    terrain.ts         height field + terrain grid, water / bridge / ridge / ice queries
+    river.ts           smoothed curves for rivers and ridges; bridges, fords, passes
+    route.ts           the way from camp to hut (HUD arrow, bots, spawning, weapon racks)
     props.ts           deterministic placement of trees, rocks, bamboo, snacks, racks, decoration
     weapons.ts         weapon stats
     types.ts           PlayerInput, Snapshot, events: the contract between sim, renderer and network
   render/              Three.js drawing only
     Renderer.ts        scene, camera, lights, interpolation, menu showcase
     world.ts           terrain, water, trees, bamboo, camp, rescue hut
+    minimap.ts         top-down map preview for the map picker
+    snowfall.ts        falling snow on snowy maps
     pandaModel.ts      survivor panda model + animation
     horde.ts           all zombies via instanced meshes
     pickups.ts         bamboo snacks, weapon racks, javelins
@@ -104,7 +115,8 @@ src/
     nameTag.ts         floating names with health bars
     weaponModels.ts    knife / axe / javelin models
     toon.ts            cartoon materials and outlines
-  game/                sessions: LocalGame (solo / host), RemoteGame (guest), Presenter (events → fx)
+  game/                sessions: LocalGame (solo / host), RemoteGame (guest), Presenter (events → fx),
+                       maps.ts (map choices, "Random", cache of built maps)
   net/                 PeerJS host & client, message protocol, compact snapshot codec
   audio/               synthesised sound effects and music (no audio files)
   input/               joystick, tilt, tap & swipe, keyboard, gamepad → PlayerInput
@@ -114,3 +126,26 @@ src/
 The simulation and the renderer only talk through `PlayerInput` (in) and `Snapshot` (out), which is
 what makes the same game run solo, as host, or as a guest.
 
+### Adding a map
+
+Copy [src/sim/maps/valley.ts](src/sim/maps/valley.ts), give it a new `id`, `seed`, layout and colours,
+and add it to `MAPS` in [src/sim/maps/index.ts](src/sim/maps/index.ts). Every device generates the
+map from that data, so multiplayer only sends the map id (plus the seed for Random Valley). Changing a map changes the game for
+everyone, so bump `PROTOCOL_VERSION` in `src/net/protocol.ts` when you do.
+
+## Roadmap
+
+1. ✅ Project setup, GitHub Pages deploy
+2. ✅ Map, panda, controls, camera, knife
+3. ✅ Zombie AI and horde, combat, health, win/lose
+4. ✅ Axe and javelin, weapon racks, bot teammates, downed / revive / turned
+5. ✅ Multiplayer: PeerJS rooms with codes, lobby, state sync
+6. ✅ Polish: sound, music, effects, HUD
+7. More maps
+   - ✅ A. Map system and picker (menu + lobby, mini-map, Random)
+   - ✅ B. River Crossing (river, bridges, ford)
+   - ✅ C. Snowy Pass (winding route between cliffs)
+   - ✅ D. Random Valley (new generated layout every match)
+
+Ideas next: special zombie types, Android packaging (Capacitor or PWABuilder), host
+migration in multiplayer, client-side prediction for smoother guest movement.

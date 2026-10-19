@@ -34,7 +34,7 @@ export class LocalGame implements Session {
     private readonly onEnd: (snap: Snapshot) => void,
     private readonly link: HostLink | null = null,
   ) {
-    this.sim = new Simulation(ctx.map, specs);
+    this.sim = new Simulation(ctx.renderer.currentMap, specs);
     this.presenter = new Presenter(ctx, specs, localId);
     this.remoteIds = specs.filter((s) => !s.bot && s.id !== localId).map((s) => s.id);
     this.curr = this.sim.snapshot();

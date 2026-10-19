@@ -15,6 +15,8 @@ export function toonGradient(): THREE.DataTexture {
 }
 
 const cache = new Map<number, THREE.MeshToonMaterial>();
+/** Materials reused across objects: never disposed. */
+const shared = new WeakSet<THREE.Material>();
 
 /** Shared toon material per colour. */
 export function toon(color: number): THREE.MeshToonMaterial {
@@ -22,8 +24,24 @@ export function toon(color: number): THREE.MeshToonMaterial {
   if (!m) {
     m = new THREE.MeshToonMaterial({ color, gradientMap: toonGradient() });
     cache.set(color, m);
+    shared.add(m);
   }
   return m;
+}
+
+/** Frees the GPU resources of everything under `root` (except shared materials). */
+export function disposeObject(root: THREE.Object3D): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (mesh.geometry) geometries.add(mesh.geometry);
+    const m = mesh.material;
+    if (m) for (const mat of Array.isArray(m) ? m : [m]) if (!shared.has(mat)) materials.add(mat);
+    if (o instanceof THREE.InstancedMesh) o.dispose();
+  });
+  for (const g of geometries) g.dispose();
+  for (const m of materials) m.dispose();
 }
 
 /** White toon material for instanced meshes, which get their colour per instance. */
@@ -32,6 +50,7 @@ export function toonInstanced(): THREE.MeshToonMaterial {
 }
 
 const OUTLINE = new THREE.MeshBasicMaterial({ color: 0x2b1e1a, side: THREE.BackSide });
+shared.add(OUTLINE);
 
 /** Inverted-hull outline: a slightly bigger back-face copy drawn in dark ink. */
 export function addOutline(mesh: THREE.Mesh, scale = 1.07): THREE.Mesh {

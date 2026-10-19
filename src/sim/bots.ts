@@ -11,6 +11,7 @@ export interface BotWorld {
   readonly javelins: readonly Javelin[];
   readonly bamboo: readonly BambooSpot[];
   steer(x: number, z: number, dx: number, dz: number, avoidWater: boolean): { x: number; z: number };
+  detour(x: number, z: number, tx: number, tz: number): { x: number; z: number; cost: number; wall: boolean } | null;
 }
 
 /** Which side of the leader each bot buddy walks on. */
@@ -99,18 +100,18 @@ export class BotBrain {
     } else if (threat && canThrow && td < 3) {
       goTo(me.x - (threat.x - me.x) * 2, me.z - (threat.z - me.z) * 2, 0.5);
     } else if (leader) {
-      // Walk a little behind the leader, on our own side.
-      const { goal } = w.map.layout;
-      const gx = goal.x - leader.x;
-      const gz = goal.z - leader.z;
+      // Walk a little behind the leader (relative to the way ahead), on our own side.
+      const ahead = w.map.route.locate(leader.x, leader.z).next;
+      const gx = ahead.x - leader.x;
+      const gz = ahead.z - leader.z;
       const gl = Math.hypot(gx, gz) || 1;
       const fx = gx / gl;
       const fz = gz / gl;
       const side = SLOT_SIDE[this.slot % SLOT_SIDE.length];
       goTo(leader.x - fx * 2.2 - fz * side * 1.8, leader.z - fz * 2.2 + fx * side * 1.8, leader.speed > 0.5 ? 0.4 : 1.5);
     } else {
-      const { goal } = w.map.layout;
-      goTo(goal.x, goal.z, 0);
+      const next = w.map.route.locate(me.x, me.z).next;
+      goTo(next.x, next.z, 0);
     }
 
     if (!Number.isNaN(tx)) {
@@ -118,7 +119,19 @@ export class BotBrain {
       const dz = tz - me.z;
       const d = Math.hypot(dx, dz);
       if (d > arrive) {
-        let dir = w.steer(me.x, me.z, dx / d, dz / d, !w.map.terrain.isWater(tx, tz));
+        // Use a pass when a ridge is in the way; a bridge or ford for water unless swimming is much shorter.
+        let wx = tx;
+        let wz = tz;
+        let avoidWater = !w.map.terrain.isWater(tx, tz);
+        const via = w.detour(me.x, me.z, tx, tz);
+        if (via && (via.wall || via.cost < d * 2 + 15)) {
+          wx = via.x;
+          wz = via.z;
+        } else if (via) {
+          avoidWater = false; // the crossing is too far: swim
+        }
+        const wl = Math.hypot(wx - me.x, wz - me.z) || 1;
+        let dir = w.steer(me.x, me.z, (wx - me.x) / wl, (wz - me.z) / wl, avoidWater);
         if (this.detourT > 0) {
           const x = dir.x * 0.3 + this.detourX;
           const z = dir.z * 0.3 + this.detourZ;

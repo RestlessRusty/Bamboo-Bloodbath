@@ -1,5 +1,5 @@
 import type { RigidBody, World } from '@dimforge/rapier3d-compat';
-import { DOWNED, GOAL_RADIUS, GRAVITY, JAVELIN, MATCH_TIME, PICKUP, SIM_DT, SURVIVOR, ZOMBIE } from '../config';
+import { DOWNED, GOAL_RADIUS, GRAVITY, ICE_GRIP, JAVELIN, MATCH_TIME, PICKUP, SIM_DT, SURVIVOR, ZOMBIE } from '../config';
 import { approachAngle } from '../core/math';
 import { Rng } from '../core/rng';
 import { BotBrain, type BotWorld } from './bots';
@@ -14,15 +14,23 @@ import { PAW, WEAPONS, type MeleeDef } from './weapons';
 /** Height of the capsule centre above the feet (same for pandas and zombies). */
 const CENTER_HEIGHT = SURVIVOR.halfHeight + SURVIVOR.radius;
 
-/** Spawn offsets around the start point, spread towards the goal (+X, -Z). */
+/** Spawn offsets around the start point as [towards the goal, sideways]. */
 const SPAWN_OFFSETS: readonly [number, number][] = [
   [0, 0],
-  [1.8, 0.4],
-  [-0.4, -1.8],
-  [1.6, -1.6],
+  [1.4, 1.2],
+  [1.4, -1.2],
+  [2.6, 0],
 ];
 
 const dist2d = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.hypot(a.x - b.x, a.z - b.z);
+
+function distToSegment(x: number, z: number, a: { x: number; z: number }, b: { x: number; z: number }): number {
+  const abx = b.x - a.x;
+  const abz = b.z - a.z;
+  const len2 = abx * abx + abz * abz || 1e-9;
+  const t = Math.max(0, Math.min(1, ((x - a.x) * abx + (z - a.z) * abz) / len2));
+  return Math.hypot(a.x + abx * t - x, a.z + abz * t - z);
+}
 
 /**
  * Authoritative game state. Pure logic, no rendering: in single player it runs locally,
@@ -39,7 +47,6 @@ export class Simulation implements BotWorld {
   private readonly obstacles: Obstacles;
   private readonly scratch: Circle[] = [];
   private readonly rng = new Rng((Math.random() * 4294967296) >>> 0);
-  private readonly routeLength: number;
   private events: GameEvent[] = [];
   private tick = 0;
   private timeLeft = MATCH_TIME;
@@ -56,14 +63,13 @@ export class Simulation implements BotWorld {
     this.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
     this.world.timestep = SIM_DT;
 
-    const { props, layout } = map;
+    const { props } = map;
     this.obstacles = new Obstacles([
       ...props.trees.filter((t) => t.collide).map((t) => ({ x: t.x, z: t.z, r: t.radius })),
       ...props.rocks.map((r) => ({ x: r.x, z: r.z, r: r.radius })),
     ]);
     this.bamboo = props.bambooSpots.map((b) => ({ ...b, active: true, respawn: 0 }));
     this.racks = props.racks.map((r) => ({ ...r }));
-    this.routeLength = dist2d(layout.start, layout.goal);
 
     this.buildStatic();
     specs.forEach((spec, i) => this.spawnSurvivor(spec, i));
@@ -183,27 +189,93 @@ export class Simulation implements BotWorld {
       sz += pz * w;
     }
 
-    if (avoidWater) {
-      const t = this.map.terrain;
-      if (t.isWater(x + sx * 1.6, z + sz * 1.6) || t.isWater(x, z)) {
-        // Walk around the pond instead of into it.
-        const { pond } = this.map.layout;
-        const rx = x - pond.x;
-        const rz = z - pond.z;
-        const rl = Math.hypot(rx, rz) || 1;
-        let tx = -rz / rl;
-        let tz = rx / rl;
+    const t = this.map.terrain;
+    if (t.ridges.length) {
+      const wx = x + sx * 2.2;
+      const wz = z + sz * 2.2;
+      if (t.isWall(wx, wz)) {
+        // Slide along the rock face: sideways to the slope, a bit away from it.
+        const up = t.uphill(wx, wz);
+        let tx = -up.z;
+        let tz = up.x;
         if (tx * dx + tz * dz < 0) {
           tx = -tx;
           tz = -tz;
         }
-        sx = tx + (rx / rl) * 0.5;
-        sz = tz + (rz / rl) * 0.5;
+        sx = tx - up.x * 0.5;
+        sz = tz - up.z * 0.5;
+      }
+    }
+
+    if (avoidWater) {
+      const ax = x + sx * 1.6;
+      const az = z + sz * 1.6;
+      if (t.isWater(ax, az) || t.isWater(x, z)) {
+        // Walk along the shore instead of into the water: sideways to the slope, a bit uphill.
+        const up = t.uphill(ax, az);
+        let tx = -up.z;
+        let tz = up.x;
+        if (tx * dx + tz * dz < 0) {
+          tx = -tx;
+          tz = -tz;
+        }
+        sx = tx + up.x * 0.5;
+        sz = tz + up.z * 0.5;
       }
     }
 
     const l = Math.hypot(sx, sz) || 1;
     return { x: sx / l, z: sz / l };
+  }
+
+  /**
+   * When deep water or a ridge blocks the straight way from (x, z) to (tx, tz): the next point to walk to
+   * (the near end of the best bridge, ford or pass, or its far end once on it) and the total path length.
+   * `wall` is set when a ridge is in the way (no swimming around that). `null` when the way is clear
+   * or the map has no crossings.
+   */
+  detour(x: number, z: number, tx: number, tz: number): { x: number; z: number; cost: number; wall: boolean } | null {
+    const crossings = this.map.terrain.crossings;
+    if (!crossings.length) return null;
+    const blocked = this.blockedBy(x, z, tx, tz);
+    if (!blocked) return null;
+    let bestCost = Infinity;
+    let entry: { x: number; z: number } | null = null;
+    let exit: { x: number; z: number } | null = null;
+    for (const c of crossings) {
+      for (const [e, o] of [
+        [c.a, c.b],
+        [c.b, c.a],
+      ]) {
+        const cost = Math.hypot(e.x - x, e.z - z) + c.length + Math.hypot(tx - o.x, tz - o.z);
+        if (cost < bestCost) {
+          bestCost = cost;
+          entry = e;
+          exit = o;
+        }
+      }
+    }
+    if (!entry || !exit) return null;
+    if (Math.hypot(exit.x - x, exit.z - z) < 2.5) return null; // made it across
+    // At the entry or already on the crossing: walk to the far end.
+    const onIt = Math.hypot(entry.x - x, entry.z - z) < 2.5 || distToSegment(x, z, entry, exit) < 2.5;
+    const p = onIt ? exit : entry;
+    return { x: p.x, z: p.z, cost: bestCost, wall: blocked === 'wall' };
+  }
+
+  /** What's in the way on the straight line between two points: a ridge, deep water, or nothing. */
+  private blockedBy(x: number, z: number, tx: number, tz: number): 'wall' | 'water' | null {
+    const t = this.map.terrain;
+    const n = Math.max(4, Math.min(16, Math.ceil(Math.hypot(tx - x, tz - z) / 3)));
+    let water = false;
+    for (let i = 1; i < n; i++) {
+      const f = i / n;
+      const px = x + (tx - x) * f;
+      const pz = z + (tz - z) * f;
+      if (t.ridges.length && t.isWall(px, pz)) return 'wall';
+      if (!water && t.isWater(px, pz)) water = true;
+    }
+    return water ? 'water' : null;
   }
 
   // ================================================================ setup
@@ -232,6 +304,37 @@ export class Simulation implements BotWorld {
     for (const r of props.rocks) {
       world.createCollider(RAPIER.ColliderDesc.cylinder(1.2, r.radius).setTranslation(r.x, r.y, r.z));
     }
+
+    // Ridges: a chain of tall invisible boxes along the spine, skipping the passes.
+    for (const r of this.map.terrain.ridges) {
+      for (let s = 1; s < r.length; s += 2) {
+        if (r.openAt(s) >= 0.5) continue;
+        const p = r.at(r.fractionOf(s));
+        const yaw = Math.atan2(-p.tz, p.tx);
+        world.createCollider(
+          RAPIER.ColliderDesc.cuboid(1.2, 30, r.wallHalf)
+            .setTranslation(p.x, 0, p.z)
+            .setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }),
+        );
+      }
+    }
+
+    // Bridges: a deck to walk on plus railings, so the crossing is a proper choke point.
+    for (const b of this.map.terrain.bridges) {
+      const yaw = Math.atan2(-b.dirZ, b.dirX);
+      const rot = { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
+      world.createCollider(
+        RAPIER.ColliderDesc.cuboid(b.halfLength, 0.2, b.halfWidth).setTranslation(b.x, b.top - 0.2, b.z).setRotation(rot).setFriction(0.3),
+      );
+      for (const side of [-1, 1]) {
+        const off = side * (b.halfWidth - 0.08);
+        world.createCollider(
+          RAPIER.ColliderDesc.cuboid(b.halfLength, 0.4, 0.08)
+            .setTranslation(b.x - b.dirZ * off, b.top + 0.4, b.z + b.dirX * off)
+            .setRotation(rot),
+        );
+      }
+    }
   }
 
   private createBody(x: number, z: number): RigidBody {
@@ -250,11 +353,15 @@ export class Simulation implements BotWorld {
   }
 
   private spawnSurvivor(spec: PlayerSpec, index: number): void {
-    const { start, goal } = this.map.layout;
-    const [ox, oz] = SPAWN_OFFSETS[index % SPAWN_OFFSETS.length];
-    const x = start.x + ox;
-    const z = start.z + oz;
-    const toGoal = Math.atan2(goal.x - x, goal.z - z);
+    const { start } = this.map.layout;
+    const first = this.map.route.pts[1]; // first waypoint, or the hut
+    const [fwd, side] = SPAWN_OFFSETS[index % SPAWN_OFFSETS.length];
+    const len = dist2d(start, first) || 1;
+    const fx = (first.x - start.x) / len;
+    const fz = (first.z - start.z) / len;
+    const x = start.x + fx * fwd - fz * side;
+    const z = start.z + fz * fwd + fx * side;
+    const toGoal = Math.atan2(first.x - x, first.z - z);
     this.survivors.push({
       spec,
       body: this.createBody(x, z),
@@ -309,6 +416,7 @@ export class Simulation implements BotWorld {
       from,
       speedMul: this.rng.range(0.85, 1.1),
       target: null,
+      via: null,
       retarget: 0,
       biteCd: 0,
       biteDone: false,
@@ -400,7 +508,8 @@ export class Simulation implements BotWorld {
       tx = mx * speed;
       tz = mz * speed;
     }
-    this.drive(body, tx, tz, s.dashTime > 0 ? Infinity : SURVIVOR.accel);
+    const grip = this.map.terrain.isIce(s.x, s.z) ? ICE_GRIP : 1;
+    this.drive(body, tx, tz, s.dashTime > 0 ? Infinity : SURVIVOR.accel * grip);
   }
 
   /** Explicit aim wins; otherwise snap towards the closest zombie (or one ahead for throws). */
@@ -540,7 +649,7 @@ export class Simulation implements BotWorld {
     s.y = p.y - CENTER_HEIGHT;
     s.z = p.z;
     s.speed = Math.hypot(v.x, v.z);
-    s.inWater = this.map.terrain.isWater(p.x, p.z);
+    s.inWater = this.map.terrain.isWet(p.x, p.z);
     s.hidden = s.attackTime < 0 && this.map.layout.thickets.some((t) => dist2d(t, s) < t.r);
     s.hurt = Math.max(0, s.hurt - SIM_DT * 3);
     if (s.inWater && !wasInWater) this.events.push({ e: 'splash', x: s.x, z: s.z });
@@ -590,6 +699,7 @@ export class Simulation implements BotWorld {
     if (z.retarget <= 0) {
       z.retarget = 0.25 + this.rng.next() * 0.1;
       z.target = this.pickTarget(z);
+      z.via = z.target ? this.detour(z.x, z.z, z.target.x, z.target.z) : null;
     }
     const t = z.target && z.target.state === 'active' ? z.target : null;
 
@@ -634,6 +744,14 @@ export class Simulation implements BotWorld {
         z.lungeZ = dz / d;
         z.lungeCd = this.rng.range(4, 7);
         this.faceZombie(z, dx, dz);
+      } else if (z.via) {
+        // Water in the way: head for the bridge or ford first.
+        const vx = z.via.x - z.x;
+        const vz = z.via.z - z.z;
+        const vl = Math.hypot(vx, vz) || 0.001;
+        dirX = vx / vl;
+        dirZ = vz / vl;
+        speed = ZOMBIE.speed * z.speedMul;
       } else {
         dirX = dx / d;
         dirZ = dz / d;
@@ -653,6 +771,8 @@ export class Simulation implements BotWorld {
       dirZ = z.wanderZ;
       speed = ZOMBIE.wanderSpeed;
     }
+
+    if (speed > 0 && z.state !== 'lunge' && this.map.terrain.isWet(z.x, z.z)) speed *= ZOMBIE.wadeSpeedMul;
 
     if (speed > 0 && (dirX !== 0 || dirZ !== 0)) {
       if (z.state !== 'lunge') {
@@ -678,18 +798,16 @@ export class Simulation implements BotWorld {
       }
     }
 
-    // Zombies can't swim: if one ends up in the pond, shove it back out.
+    // Zombies can't swim: if one ends up in the water, shove it back uphill to the shore.
     if (this.map.terrain.isWater(z.x, z.z)) {
-      const { pond } = this.map.layout;
-      const rx = z.x - pond.x;
-      const rz = z.z - pond.z;
-      const rl = Math.hypot(rx, rz) || 1;
-      sepX += (rx / rl) * 3;
-      sepZ += (rz / rl) * 3;
+      const up = this.map.terrain.uphill(z.x, z.z);
+      sepX += up.x * 3;
+      sepZ += up.z * 3;
     }
 
     z.rot = approachAngle(z.rot, Math.atan2(z.faceX, z.faceZ), ZOMBIE.turnSpeed * SIM_DT);
-    this.drive(body, dirX * speed + sepX * 1.5, dirZ * speed + sepZ * 1.5, z.state === 'lunge' ? Infinity : ZOMBIE.accel);
+    const grip = this.map.terrain.isIce(z.x, z.z) ? ICE_GRIP : 1;
+    this.drive(body, dirX * speed + sepX * 1.5, dirZ * speed + sepZ * 1.5, z.state === 'lunge' ? Infinity : ZOMBIE.accel * grip);
 
     if (z.groanCd <= 0) {
       z.groanCd = this.rng.range(5, 12);
@@ -787,7 +905,8 @@ export class Simulation implements BotWorld {
     let best = 0;
     for (const s of this.survivors) {
       if (s.state === 'dead') continue;
-      const p = s.state === 'rescued' ? 1 : 1 - dist2d(s, this.map.layout.goal) / this.routeLength;
+      const { route } = this.map;
+      const p = s.state === 'rescued' ? 1 : route.locate(s.x, s.z).along / route.length;
       best = Math.max(best, p);
     }
     return Math.max(0, Math.min(1, best));
@@ -797,7 +916,7 @@ export class Simulation implements BotWorld {
     const { layout, terrain } = this.map;
     const half = layout.size / 2 - 3;
     if (Math.abs(x) > half || Math.abs(z) > half) return false;
-    if (terrain.isWater(x, z)) return false;
+    if (terrain.isWater(x, z) || terrain.ridgeAmount(x, z) > 0.15) return false;
     if (dist2d({ x, z }, layout.start) < layout.start.r + 8) return false;
     if (dist2d({ x, z }, layout.goal) < layout.goal.r + 2) return false;
     if (this.survivors.some((s) => s.state !== 'dead' && s.state !== 'rescued' && dist2d(s, { x, z }) < ZOMBIE.safeRadius)) return false;
@@ -812,11 +931,11 @@ export class Simulation implements BotWorld {
     if (alive >= this.desiredHorde() || this.spawnTimer > 0) return;
     this.spawnTimer = ZOMBIE.spawnInterval;
 
-    const { goal } = this.map.layout;
     for (let tries = 0; tries < 8; tries++) {
       const a = this.rng.pick(anchors);
-      // Mostly spawn ahead of the group, sometimes from anywhere.
-      const toGoal = Math.atan2(goal.x - a.x, goal.z - a.z);
+      // Mostly spawn ahead of the group (along the route), sometimes from anywhere.
+      const next = this.map.route.locate(a.x, a.z).next;
+      const toGoal = Math.atan2(next.x - a.x, next.z - a.z);
       const ang = this.rng.next() < 0.6 ? toGoal + this.rng.range(-1.2, 1.2) : this.rng.range(0, Math.PI * 2);
       const d = this.rng.range(ZOMBIE.spawnMin, ZOMBIE.spawnMax);
       const x = a.x + Math.sin(ang) * d;
@@ -876,7 +995,7 @@ export class Simulation implements BotWorld {
       }
       if (landed) continue;
 
-      const ground = terrain.heightAt(nx, nz);
+      const ground = terrain.groundAt(nx, nz);
       const hitTree = this.obstacles.near(nx, nz, 0.05, this.scratch).length > 0 && ny < ground + 4.5;
       const outside = Math.abs(nx) > half || Math.abs(nz) > half;
       if (hitTree || outside || ny <= ground + 0.05 || j.age > JAVELIN.maxAge) {
@@ -893,11 +1012,11 @@ export class Simulation implements BotWorld {
     const half = this.map.layout.size / 2 - 2;
     j.x = Math.max(-half, Math.min(half, x));
     j.z = Math.max(-half, Math.min(half, z));
-    j.y = this.map.terrain.heightAt(j.x, j.z) + (pitch < 0 ? 0.35 : 0.08);
+    j.y = this.map.terrain.groundAt(j.x, j.z) + (pitch < 0 ? 0.35 : 0.08);
     j.pitch = pitch;
     j.flying = false;
     j.age = 0;
-    if (this.map.terrain.isWater(j.x, j.z)) this.events.push({ e: 'splash', x: j.x, z: j.z });
+    if (this.map.terrain.isWet(j.x, j.z)) this.events.push({ e: 'splash', x: j.x, z: j.z });
     else this.events.push({ e: 'thud', x: j.x, y: j.y, z: j.z });
   }
 

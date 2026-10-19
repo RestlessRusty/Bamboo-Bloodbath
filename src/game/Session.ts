@@ -1,5 +1,4 @@
 import type { InputManager } from '../input/InputManager';
-import type { GameMap } from '../sim/gameMap';
 import type { PresentContext } from './Presenter';
 
 /** A running match, whether simulated here (solo / host) or received from a host (guest). */
@@ -12,7 +11,7 @@ export interface Session {
   paused: boolean;
 }
 
+/** The map of a match is whatever the renderer currently shows (see Renderer.setMap). */
 export interface GameContext extends PresentContext {
-  map: GameMap;
   input: InputManager;
 }

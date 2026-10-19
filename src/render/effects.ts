@@ -28,7 +28,7 @@ export class Effects {
   private readonly o = new THREE.Object3D();
   private readonly c = new THREE.Color();
 
-  constructor(private readonly terrain: Terrain) {
+  constructor(private terrain: Terrain) {
     this.particles = new THREE.InstancedMesh(
       new THREE.IcosahedronGeometry(1, 0),
       new THREE.MeshBasicMaterial({ color: 0xffffff }),
@@ -65,6 +65,21 @@ export class Effects {
     this.group.add(this.particles, this.decals);
   }
 
+  /** New map: drop all particles and splats and follow the new ground. */
+  reset(terrain: Terrain): void {
+    this.terrain = terrain;
+    this.o.position.set(0, 0, 0);
+    this.o.rotation.set(0, 0, 0);
+    this.o.scale.setScalar(0);
+    this.o.updateMatrix();
+    this.pLife.fill(0);
+    this.dAge.fill(DECAL_LIFE);
+    for (let i = 0; i < MAX_PARTICLES; i++) this.particles.setMatrixAt(i, this.o.matrix);
+    for (let i = 0; i < MAX_DECALS; i++) this.decals.setMatrixAt(i, this.o.matrix);
+    this.particles.instanceMatrix.needsUpdate = true;
+    this.decals.instanceMatrix.needsUpdate = true;
+  }
+
   blood(x: number, y: number, z: number, big: boolean): void {
     this.burst(x, y, z, big ? 18 : 9, [0xc4161c, 0x9e0f14, 0xe8343a], big ? 4.5 : 3.2, 0.07, 14);
     this.decal(x, z, big ? 0.9 : 0.5);
@@ -95,7 +110,7 @@ export class Effects {
         this.pPos[k] += this.pVel[k] * dt;
         this.pPos[k + 1] += this.pVel[k + 1] * dt;
         this.pPos[k + 2] += this.pVel[k + 2] * dt;
-        const ground = this.terrain.heightAt(this.pPos[k], this.pPos[k + 2]) + 0.03;
+        const ground = this.terrain.groundAt(this.pPos[k], this.pPos[k + 2]) + 0.03;
         if (this.pPos[k + 1] < ground) {
           this.pPos[k + 1] = ground;
           this.pVel[k] *= 0.5;
@@ -158,7 +173,7 @@ export class Effects {
     this.dNext = (this.dNext + 1) % MAX_DECALS;
     const ox = x + (Math.random() - 0.5) * 0.6;
     const oz = z + (Math.random() - 0.5) * 0.6;
-    this.dPos.set([ox, this.terrain.heightAt(ox, oz) + 0.04, oz], i * 3);
+    this.dPos.set([ox, this.terrain.groundAt(ox, oz) + 0.04, oz], i * 3);
     this.dSize[i] = size * (0.7 + Math.random() * 0.6);
     this.dRot[i] = Math.random() * Math.PI;
     this.dAge[i] = 0;

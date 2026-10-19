@@ -57,6 +57,8 @@ export interface Zombie {
   from: string | null;
   speedMul: number;
   target: Survivor | null;
+  /** Bridge or ford end to walk to first when water is in the way of the target. */
+  via: { x: number; z: number } | null;
   retarget: number;
   biteCd: number;
   biteDone: boolean;

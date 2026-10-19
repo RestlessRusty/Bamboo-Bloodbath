@@ -8,8 +8,11 @@ import { encodeInput, PEER_PREFIX, PROTOCOL_VERSION, type HostMsg, type LobbyPla
 export class NetClient {
   players: LobbyPlayer[] = [];
   bots = 0;
+  /** The host's map choice as sent (validate before use). */
+  mapPick = '';
   onLobby: (() => void) | null = null;
-  onStart: ((specs: PlayerSpec[]) => void) | null = null;
+  /** `map` is unvalidated wire data (should be a MapRef). */
+  onStart: ((specs: PlayerSpec[], map: unknown) => void) | null = null;
   onSnapshot: ((snap: Snapshot) => void) | null = null;
   onClosed: ((reason: string) => void) | null = null;
   private closed = false;
@@ -19,7 +22,6 @@ export class NetClient {
     private readonly conn: DataConnection,
     readonly myId: string,
     readonly code: string,
-    private readonly bambooCount: number,
   ) {
     conn.on('data', (data) => this.onData(data as HostMsg));
     conn.on('close', () => this.lost('Lost connection to the host.'));
@@ -29,7 +31,7 @@ export class NetClient {
     });
   }
 
-  static async join(code: string, me: Omit<LobbyPlayer, 'id'>, bambooCount: number): Promise<NetClient> {
+  static async join(code: string, me: Omit<LobbyPlayer, 'id'>): Promise<NetClient> {
     const peer = await openPeer();
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -57,7 +59,7 @@ export class NetClient {
         if (msg?.t === 'welcome') {
           settled = true;
           window.clearTimeout(timer);
-          resolve(new NetClient(peer, conn, msg.id, code, bambooCount));
+          resolve(new NetClient(peer, conn, msg.id, code));
         } else if (msg?.t === 'reject') {
           fail(msg.reason);
         }
@@ -87,13 +89,14 @@ export class NetClient {
       case 'lobby':
         this.players = Array.isArray(msg.players) ? msg.players : [];
         this.bots = typeof msg.bots === 'number' ? msg.bots : 0;
+        this.mapPick = typeof msg.map === 'string' ? msg.map : '';
         this.onLobby?.();
         break;
       case 'start':
-        if (Array.isArray(msg.specs)) this.onStart?.(msg.specs);
+        if (Array.isArray(msg.specs)) this.onStart?.(msg.specs, msg.map);
         break;
       case 'snap':
-        this.onSnapshot?.(decodeSnapshot(msg.s, this.bambooCount));
+        this.onSnapshot?.(decodeSnapshot(msg.s));
         break;
       case 'bye':
         this.lost(msg.reason || 'The host left.');
