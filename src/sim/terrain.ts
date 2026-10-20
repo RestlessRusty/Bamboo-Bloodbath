@@ -8,6 +8,10 @@ const FLAT_LEVEL = 0.2;
 const RIVER_BANK = 6;
 /** How far the bed of a ford sits below the water: shallow enough for zombies. */
 const FORD_DEPTH = 0.08;
+/** Natural dips flatten out below this height… */
+const GROUND_FLOOR = 0.05;
+/** …keeping only this fraction of their depth, so they never reach the water line. */
+const DIP_KEEP = 0.1;
 
 /** Analytic height field shared by physics (via the grid) and rendering. */
 export class Terrain {
@@ -48,6 +52,9 @@ export class Terrain {
     const { seed, hills, ponds, start, goal, size } = this.layout;
 
     let h = (valueNoise(x / 22, z / 22, seed) - 0.5) * 2.2 + (valueNoise(x / 7, z / 7, seed + 17) - 0.5) * 0.45;
+    // Low spots in the noise used to sink below the water line: muddy patches with no visible water
+    // that still slowed everyone down. Squash them so the only water is in ponds and rivers.
+    if (h < GROUND_FLOOR) h = GROUND_FLOOR - (GROUND_FLOOR - h) * DIP_KEEP;
 
     for (const hill of hills) {
       const dh = Math.hypot(x - hill.x, z - hill.z);

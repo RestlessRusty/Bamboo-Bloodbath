@@ -241,7 +241,7 @@ export class Hud {
     else if (me.hidden) status = 'Hidden in the bamboo';
     else if (snap.zombies.some((z) => z.state === 'sleep' && Math.hypot(z.x - me.x, z.z - me.z) < SLEEPER_HINT_RANGE)) {
       status = me.speed > SURVIVOR.speed * NOISE.sneakFrac ? 'Shh! Walk slowly past sleeping zombies' : 'Sneaking…';
-    }
+    } else if (me.inWater) status = 'Wading: water slows you down';
     this.setText(this.status, status);
     this.status.classList.toggle('small', me.state === 'active');
 
