@@ -1,5 +1,5 @@
 import { NET_SEND_EVERY, SIM_DT } from '../config';
-import { Simulation } from '../sim/Simulation';
+import { Simulation, type SimOptions } from '../sim/Simulation';
 import type { GameEvent, PlayerInput, PlayerSpec, Snapshot } from '../sim/types';
 import { Presenter } from './Presenter';
 import type { GameContext, Session } from './Session';
@@ -33,8 +33,9 @@ export class LocalGame implements Session {
     private readonly localId: string,
     private readonly onEnd: (snap: Snapshot) => void,
     private readonly link: HostLink | null = null,
+    options: SimOptions = {},
   ) {
-    this.sim = new Simulation(ctx.renderer.currentMap, specs);
+    this.sim = new Simulation(ctx.renderer.currentMap, specs, options);
     this.presenter = new Presenter(ctx, specs, localId);
     this.remoteIds = specs.filter((s) => !s.bot && s.id !== localId).map((s) => s.id);
     this.curr = this.sim.snapshot();
@@ -87,6 +88,7 @@ export class LocalGame implements Session {
 
     renderer.updateGame(frozen ? 0 : dt, this.prev, this.curr, frozen ? 1 : this.acc / SIM_DT, this.localId);
     hud.update(this.curr, fps);
+    this.ctx.story?.update(this.curr, frozen ? 0 : dt);
     input.setCrackerCount(this.curr.survivors.find((s) => s.id === this.localId)?.crackers ?? 0);
   }
 

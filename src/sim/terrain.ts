@@ -71,6 +71,10 @@ export class Terrain {
     for (const c of [start, goal]) {
       h = lerp(FLAT_LEVEL, h, smoothstep(c.r, c.r + 8, Math.hypot(x - c.x, z - c.z)));
     }
+    // …and a flat yard around each building.
+    for (const l of this.layout.landmarks ?? []) {
+      h = lerp(FLAT_LEVEL, h, smoothstep(l.r + 3, l.r + 9, Math.hypot(x - l.x, z - l.z)));
+    }
 
     // Rivers: flat banks, then a channel whose middle sits `depth` below the water (less at fords).
     let inRiver = 0;

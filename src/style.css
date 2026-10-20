@@ -256,7 +256,10 @@ small {
   margin-top: 4px;
 }
 .menu-buttons .btn.primary {
-  flex: 1 1 100%;
+  flex: 1 1 40%;
+}
+.menu-buttons .btn.story {
+  background: var(--blood);
 }
 
 .map-picker {
@@ -904,4 +907,266 @@ small {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ------------------------------------------------------------ story mode */
+
+.story-logo {
+  font-size: clamp(26px, 7vh, 40px);
+}
+.chapter-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.chapter-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--ink);
+  text-align: left;
+  background: #fff;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.chapter-btn.active {
+  background: #fff3b8;
+  box-shadow: 0 3px 0 var(--ink);
+}
+.chapter-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.chapter-num {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #fff;
+  font-size: 14px;
+  line-height: 24px;
+  text-align: center;
+}
+.chapter-btn.done .chapter-num {
+  background: var(--green-dark);
+}
+.chapter-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chapter-mark {
+  flex: none;
+  color: var(--green-dark);
+  font-weight: 700;
+}
+@media (max-height: 430px) {
+  .chapter-btn {
+    font-size: 14px;
+    padding: 2px 8px;
+  }
+  .chapter-num {
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+    font-size: 12px;
+  }
+}
+
+/* Cards between chapters: above the menus. */
+.story-cards {
+  z-index: 5;
+}
+.story-card {
+  width: min(460px, 92vw);
+  align-items: stretch;
+}
+.story-art {
+  align-self: center;
+  width: min(240px, 60vw, 36vh);
+}
+.story-art svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.story-card h2 {
+  font-size: 24px;
+}
+.story-card p {
+  font-size: 18px;
+  line-height: 1.35;
+  min-height: 2.7em;
+}
+.story-dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+.story-dots span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--ink);
+}
+.story-dots span.on {
+  background: var(--ink);
+}
+.story-card-buttons {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.story-card-buttons .btn.primary {
+  flex: 1;
+}
+@media (max-height: 430px) {
+  .story-card {
+    padding: 10px 16px;
+    gap: 6px;
+  }
+  .story-card h2 {
+    font-size: 20px;
+  }
+  .story-card p {
+    font-size: 16px;
+  }
+}
+
+/* In-game: objective panel and dialogue. Below the HUD (its pause/end overlays cover this). */
+.story-hud {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.story-obj {
+  position: absolute;
+  top: calc(12px + var(--safe-t));
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(46vw, 420px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  background: rgba(255, 248, 234, 0.92);
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 0 3px 0 var(--ink);
+  padding: 4px 12px;
+  text-align: center;
+}
+.story-obj.below-timer {
+  top: calc(60px + var(--safe-t));
+}
+.story-obj.new {
+  animation: obj-pop 0.5s ease-out;
+}
+@keyframes obj-pop {
+  0% {
+    transform: translateX(-50%) scale(0.7);
+  }
+  60% {
+    transform: translateX(-50%) scale(1.08);
+  }
+  100% {
+    transform: translateX(-50%) scale(1);
+  }
+}
+.story-obj-text {
+  font-size: 15px;
+  font-weight: 700;
+}
+.story-obj-sub {
+  font-size: 13px;
+  font-weight: 600;
+}
+.story-obj-sub:empty {
+  display: none;
+}
+.story-obj-sub.warn {
+  color: var(--blood);
+}
+.story-obj-bar {
+  width: 100%;
+  min-width: 140px;
+  height: 9px;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+  background: #fff;
+  overflow: hidden;
+}
+.story-obj-bar > div {
+  height: 100%;
+  width: 0;
+  background: #4fd1b0;
+}
+.story-say {
+  position: absolute;
+  left: 50%;
+  bottom: calc(14px + var(--safe-b));
+  transform: translateX(-50%);
+  /* Narrow enough to stay clear of the joystick and the action buttons. */
+  width: min(480px, 44vw);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 248, 234, 0.95);
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 0 4px 0 var(--ink);
+  padding: 6px 8px 6px 12px;
+  font-size: 15px;
+  line-height: 1.25;
+}
+.story-say.pop {
+  animation: say-pop 0.25s ease-out;
+}
+@keyframes say-pop {
+  from {
+    transform: translate(-50%, 12px);
+    opacity: 0;
+  }
+}
+.story-say > span {
+  flex: 1;
+  min-width: 0;
+}
+.story-say .btn {
+  pointer-events: auto;
+  flex: none;
+}
+.story-who {
+  flex: none;
+  font-size: 13px;
+  color: #fff;
+  background: var(--ink);
+  border-radius: 8px;
+  padding: 2px 7px;
+}
+.story-who.you {
+  background: #c99a12;
+}
+.story-who.doc {
+  background: var(--blood);
+}
+.story-who.radio {
+  background: #6b6f7a;
+}
+.story-who.buddy {
+  background: var(--blue);
 }

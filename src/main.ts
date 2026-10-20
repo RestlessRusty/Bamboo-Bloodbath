@@ -15,12 +15,19 @@ import { botName } from './sim/bots';
 import type { MapRef } from './sim/mapLayout';
 import { DEFAULT_MAP, refOf } from './sim/maps';
 import { initPhysics } from './sim/physics';
+import { CHAPTERS } from './sim/story/chapters';
+import { chapterOptions, DOC_SPEC, hasDoc } from './sim/story/Mission';
+import type { Card } from './sim/story/types';
 import { PANDA_VARIANTS, WEAPON_TYPES, type PlayerSpec, type Snapshot } from './sim/types';
+import { completeChapter, loadProgress } from './storyProgress';
 import { el, formatTime } from './ui/dom';
 import { Hud, type EndMode } from './ui/Hud';
 import { Lobby } from './ui/Lobby';
 import { Menu } from './ui/Menu';
 import { SettingsPanel, type SettingKey } from './ui/SettingsPanel';
+import { StoryCards } from './ui/StoryCards';
+import { StoryHud } from './ui/StoryHud';
+import { StoryMenu } from './ui/StoryMenu';
 
 // ------------------------------------------------------------------ error reporting
 
@@ -63,6 +70,9 @@ let client: NetClient | null = null;
 let netToken = 0;
 let wakeLock: { release(): Promise<void> } | null = null;
 const fallbackName = `Panda${Math.floor(100 + Math.random() * 900)}`;
+const progress = loadProgress(CHAPTERS.length);
+/** Story chapter being played, and where a retry starts (stage and the clock at that point). */
+let run: { chapter: number; checkpoint: number; clock: number | null } | null = null;
 
 const input = new InputManager(uiEl, {
   screenToGround: (x, y) => renderer.screenToGround(x, y),
@@ -80,12 +90,24 @@ const hud = new Hud(uiEl, {
   onPause: () => setPaused(true),
   onResume: () => setPaused(false),
   onSettings: () => settingsPanel.open(),
-  onRestart: () => void startSolo(),
+  onRestart: () => {
+    if (mode === 'story' && run) void startChapter(run.chapter, 0, null);
+    else void startSolo();
+  },
   onLobby: () => hostBackToLobby(),
   onQuit: () => leaveToMenu(),
+  onNext: () => continueStory(),
+  onCheckpoint: () => {
+    if (run) void startChapter(run.chapter, run.checkpoint, run.clock);
+  },
+  onChapters: () => openStory(run?.chapter),
 });
 
 const menu = new Menu(uiEl, settings, {
+  onStory: () => {
+    unlockAudio();
+    openStory();
+  },
   onPlaySolo: () => void startSolo(),
   onMultiplayer: () => {
     unlockAudio();
@@ -112,7 +134,20 @@ const lobby = new Lobby(uiEl, {
   onLeave: () => leaveToMenu(),
 });
 
-const ctx: GameContext = { renderer, input, hud, sfx, settings };
+const storyHud = new StoryHud(uiEl);
+const storyMenu = new StoryMenu(uiEl, CHAPTERS, settings, {
+  onPlay: (i) => beginChapter(i),
+  onSelect: (i) => showChapterMap(i),
+  onBack: () => {
+    storyMenu.hide();
+    showMenuMap();
+    menu.show();
+  },
+  onChange: () => saveSettings(settings),
+});
+const cards = new StoryCards(uiEl);
+
+const ctx: GameContext = { renderer, input, hud, sfx, settings, story: storyHud };
 
 renderer.setShowcase(settings.variant, settings.weapon);
 
@@ -212,9 +247,11 @@ function releaseWakeLock(): void {
 function clearSession(): void {
   session?.dispose();
   session = null;
+  storyHud.reset();
 }
 
-function enterGame(mapRef: MapRef, create: () => Session): void {
+/** `intro`: what to flash at the start instead of the map name and tip (story chapters). */
+function enterGame(mapRef: MapRef, create: () => Session, intro?: string): void {
   clearSession();
   renderer.clearShowcase();
   const map = loadMap(mapRef);
@@ -222,10 +259,15 @@ function enterGame(mapRef: MapRef, create: () => Session): void {
   hud.setRoute(map.route);
   menu.hide();
   lobby.hide();
+  storyMenu.hide();
   hud.show();
   session = create();
   input.setEnabled(true);
   void requestWakeLock();
+  if (intro) {
+    hud.flash(intro, 3000);
+    return;
+  }
   hud.flash(`${map.layout.name}: reach the rescue hut to the ${hutDirection(map.layout)}!`, 3500);
   const { tip } = map.layout;
   const started = session;
@@ -268,6 +310,114 @@ function onGameEnd(snap: Snapshot): void {
   hud.showEnd(won, text, mode);
 }
 
+// ------------------------------------------------------------------ story mode
+
+/** The chapter list (from the main menu, or after a chapter). */
+function openStory(chapter?: number): void {
+  clearSession();
+  cards.cancel();
+  run = null;
+  input.setEnabled(false);
+  hud.hide();
+  releaseWakeLock();
+  menu.hide();
+  storyMenu.show(progress, chapter);
+}
+
+/** A chapter's map behind the story menu and cards, with your panda at the camp. */
+function showChapterMap(i: number): void {
+  renderer.setMap(loadMap(refOf(CHAPTERS[i].map)));
+  renderer.setShowcase(settings.variant, settings.weapon);
+}
+
+/** Chapter picked in the list: its intro cards, then the chapter. Runs inside a tap. */
+function beginChapter(i: number): void {
+  enterFullscreenLandscape();
+  ensureTiltPermission();
+  unlockAudio();
+  storyMenu.hide();
+  showChapterMap(i);
+  const ch = CHAPTERS[i];
+  cards.play(ch.intro, ch.art, nickname(), () => void startChapter(i, 0, null));
+}
+
+/** Plays chapter `index` from stage `from` (0, or a checkpoint); `clock`: time left at that checkpoint. */
+async function startChapter(index: number, from: number, clock: number | null): Promise<void> {
+  enterFullscreenLandscape();
+  ensureTiltPermission();
+  unlockAudio();
+  await physicsReady;
+  const ch = CHAPTERS[index];
+  mode = 'story';
+  localId = 'p1';
+  run = { chapter: index, checkpoint: from, clock };
+  const bots = botSpecs(settings.bots);
+  const specs: PlayerSpec[] = [
+    { id: 'p1', name: nickname(), variant: settings.variant, weapon: settings.weapon, bot: false },
+    ...bots,
+    ...(hasDoc(ch) ? [DOC_SPEC] : []),
+  ];
+  const intro = from > 0 ? `Chapter ${index + 1}: back at the checkpoint` : `Chapter ${index + 1}: ${ch.title}`;
+  enterGame(refOf(ch.map), () => new LocalGame(ctx, specs, localId, onStoryEnd, null, chapterOptions(ch, from, clock)), intro);
+  storyHud.start(ch, nickname(), bots[0]?.name ?? null);
+}
+
+function onStoryEnd(snap: Snapshot): void {
+  input.setEnabled(false);
+  releaseWakeLock();
+  const r = run;
+  if (!r) return;
+  const won = snap.phase === 'won';
+  sfx.play(won ? 'win' : 'lose');
+  const me = snap.survivors.find((s) => s.id === localId);
+  const kills = me ? ` You bonked ${me.kills} zombie${me.kills === 1 ? '' : 's'}.` : '';
+
+  if (won) {
+    completeChapter(progress, r.chapter);
+    const last = r.chapter === CHAPTERS.length - 1;
+    hud.showEnd(true, (last ? 'The cure is brewing. You did it!' : `${CHAPTERS[r.chapter].title}: done!`) + kills, 'story', 'Chapter complete!');
+    return;
+  }
+
+  const st = snap.story;
+  if (st) {
+    r.checkpoint = st.checkpoint;
+    r.clock = st.checkpointTime >= 0 ? st.checkpointTime : null;
+  }
+  const reason =
+    st?.fail === 'doc'
+      ? 'Doc turned into a zombie. No Doc, no cure…'
+      : st?.fail === 'time'
+        ? 'Time’s up! The storm caught you.'
+        : 'The zombies got you…';
+  hud.showEnd(false, reason + kills, 'story', 'Game over', r.checkpoint > 0);
+}
+
+/** After a won chapter: its closing cards, then the next chapter's opening cards (one Skip skips both). */
+function continueStory(): void {
+  const r = run;
+  if (!r) return;
+  const ch = CHAPTERS[r.chapter];
+  const next = r.chapter + 1;
+  clearSession();
+  hud.hide();
+  input.setEnabled(false);
+  const withArt = (list: readonly Card[], art: Card['art']): Card[] => list.map((c) => ({ art, ...c }));
+
+  if (next < CHAPTERS.length) {
+    const nextCh = CHAPTERS[next];
+    showChapterMap(next);
+    cards.play([...withArt(ch.outro, ch.art), ...withArt(nextCh.intro, nextCh.art)], nextCh.art, nickname(), () =>
+      void startChapter(next, 0, null),
+    );
+  } else {
+    renderer.setShowcase(settings.variant, settings.weapon);
+    cards.play(ch.outro, ch.art, nickname(), () => openStory(r.chapter), 'Chapters');
+  }
+}
+
+// ------------------------------------------------------------------ pause & leaving
+
 function setPaused(on: boolean): void {
   if (!session || session.isOver) return;
   session.paused = on;
@@ -278,6 +428,9 @@ function setPaused(on: boolean): void {
 function leaveToMenu(message = ''): void {
   netToken++;
   clearSession();
+  cards.cancel();
+  storyMenu.hide();
+  run = null;
   host?.close();
   host = null;
   client?.close();

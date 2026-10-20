@@ -80,7 +80,9 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
   const rng = new Rng(layout.seed);
   const half = layout.size / 2;
   const { start, goal, ponds, hills, thickets, density, theme } = layout;
+  const landmarks = layout.landmarks ?? [];
   const solids: Circle[] = [];
+  const nearLandmark = (x: number, z: number, gap: number) => landmarks.some((l) => dist(x, z, l) < l.r + gap);
 
   const nearPond = (x: number, z: number, gap: number) => ponds.some((p) => dist(x, z, p) < p.r + gap);
   const nearHilltop = (x: number, z: number, gap: number) => hills.some((h) => dist(x, z, h) < gap);
@@ -94,6 +96,7 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
     nearCrossing(x, z, 5) ||
     terrain.ridgeAmount(x, z) > 0.02 ||
     nearHilltop(x, z, 6) ||
+    nearLandmark(x, z, 5) ||
     thickets.some((t) => dist(x, z, t) < t.r + 1.5);
   const spaced = (x: number, z: number, gap: number) => solids.every((s) => dist(x, z, s) >= s.r + gap);
   const randomPoint = (margin: number) => ({
@@ -107,12 +110,14 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
     !terrain.nearRiver(x, z, 1.5) &&
     !nearCrossing(x, z, 3) &&
     terrain.ridgeAmount(x, z) < 0.02 &&
+    !nearLandmark(x, z, 2) &&
     !terrain.isWet(x, z);
 
   // Weapon racks spread along the route, alternating sides of it.
   const racks: RackProp[] = [];
-  RACK_WEAPONS.forEach((weapon, i) => {
-    const p = route.at(0.15 + (i / (RACK_WEAPONS.length - 1)) * 0.7);
+  const rackWeapons = layout.racks ?? RACK_WEAPONS;
+  rackWeapons.forEach((weapon, i) => {
+    const p = route.at(0.15 + (i / Math.max(1, rackWeapons.length - 1)) * 0.7);
     for (let tries = 0; tries < 40; tries++) {
       const side = (i % 2 ? 1 : -1) * rng.range(6, 16);
       const x = p.x - side * p.dz + rng.range(-3, 3);

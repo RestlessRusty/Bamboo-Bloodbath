@@ -10,6 +10,8 @@ export interface PlayerSpec {
   variant: PandaVariant;
   weapon: WeaponType;
   bot: boolean;
+  /** A story character (Doc): driven by the mission's own AI, not a teammate you play with. */
+  npc?: boolean;
 }
 
 /**
@@ -127,11 +129,49 @@ export type GameEvent =
   | { e: 'toss'; id: string }
   | { e: 'pop'; x: number; y: number; z: number }
   | { e: 'bang'; x: number; y: number; z: number }
-  | { e: 'loot'; id: string };
+  | { e: 'loot'; id: string }
+  // Story mode only (solo, so these never go over the network).
+  | { e: 'say'; who: string; text: string }
+  | { e: 'collect'; id: string; x: number; y: number; z: number }
+  | { e: 'objective' }
+  | { e: 'checkpoint' }
+  | { e: 'heal'; id: string };
+
+export type StoryItemKind = 'battery' | 'lotus' | 'glowcap';
+
+/** Why a story chapter was lost. */
+export type StoryFail = 'doc' | 'time' | 'wiped';
+
+/** Story mode state for the HUD and renderer. */
+export interface StorySnap {
+  /** Index of the current stage (objective) in the chapter. */
+  stage: number;
+  /** Items picked up / needed in a "collect" stage. */
+  got: number;
+  need: number;
+  /** "Hold" stages: progress 0..1, and whether someone is inside the zone right now. */
+  hold: number;
+  holding: boolean;
+  /** The player is at the target but Doc is lagging behind. */
+  waitDoc: boolean;
+  items: { id: number; kind: StoryItemKind; x: number; y: number; z: number }[];
+  /** Area to defend in a "hold" stage. */
+  zone: { x: number; z: number; r: number } | null;
+  /** Where the current objective is (for the light beam), if it's one place. */
+  target: { x: number; z: number } | null;
+  /** Next point to walk to for the HUD arrow (a pass or bridge on the way), and the distance left. */
+  arrow: { x: number; z: number } | null;
+  dist: number;
+  /** Stage a retry starts from, and the clock (-1: untimed) when it was reached. */
+  checkpoint: number;
+  checkpointTime: number;
+  fail: StoryFail | null;
+}
 
 /** Everything a client needs to draw one simulation tick. */
 export interface Snapshot {
   tick: number;
+  /** Seconds left on the clock; -1 when the match has no time limit. */
   timeLeft: number;
   phase: MatchPhase;
   rescued: number;
@@ -146,4 +186,6 @@ export interface Snapshot {
   racks: WeaponType[];
   /** Things that happened since the previous snapshot (sounds, effects, messages). */
   events: GameEvent[];
+  /** Story mode only. */
+  story?: StorySnap;
 }

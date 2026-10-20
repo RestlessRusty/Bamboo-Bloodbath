@@ -2,6 +2,7 @@ import type { MapLayout, MapRef } from '../mapLayout';
 import { generateValley, RANDOM_VALLEY_BLURB, RANDOM_VALLEY_ID, RANDOM_VALLEY_NAME } from './randomValley';
 import { RIVER_CROSSING } from './riverCrossing';
 import { SNOWY_PASS } from './snowyPass';
+import { STORY_MAPS } from './story';
 import { BAMBOO_VALLEY } from './valley';
 
 /** Every hand-made map, in picker order. */
@@ -36,8 +37,8 @@ export function previewRef(id: string): MapRef {
   return id === RANDOM_VALLEY_ID ? { id, seed: PREVIEW_SEED } : newRef(id);
 }
 
-/** The layout a ref points to. Unknown ids fall back to the default map. */
+/** The layout a ref points to (story chapter maps included). Unknown ids fall back to the default map. */
 export function layoutFor(ref: MapRef): MapLayout {
   if (ref.id === RANDOM_VALLEY_ID) return generateValley(ref.seed);
-  return MAPS.find((m) => m.id === ref.id) ?? DEFAULT_MAP;
+  return MAPS.find((m) => m.id === ref.id) ?? STORY_MAPS.find((m) => m.id === ref.id) ?? DEFAULT_MAP;
 }

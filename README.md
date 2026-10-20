@@ -66,6 +66,26 @@ On the phone, open the URL and use the browser's *Add to Home screen* to install
   within 10 s → you **turn into a zombie** and keep your name… in green.
 - **Bot buddies** (0–3) follow you, fight, revive and eat on their own.
 
+## Story mode
+
+Menu → **Story**: *Find the Cure*, five chapters on their own hand-made maps, solo with 0–3 bot
+buddies. Finishing a chapter unlocks the next (saved on the device).
+
+1. **The Signal** (Ember Woods): fix the ranger radio with batteries found around the woods.
+2. **House Call** (Willow River): reach Doc Mapo's clinic across the river, hold it while she packs,
+   then escort her out.
+3. **Over the Mountains** (Frostbite Ridge): pick snow lotus on both sides of a ridge, 10-minute clock.
+4. **Glowcaps** (Firefly Fen): hide Doc in a bamboo thicket, collect glowing mushrooms, come back for her.
+5. **The Brew** (Old Research Station): get Doc through the gate, then defend the yard while the cure brews.
+
+- **Doc** follows you (or waits somewhere), revives anyone who's down, and slowly heals pandas next
+  to her when no zombie is close. If she turns into a zombie, the chapter is lost.
+- The **objective** is always shown at the top, and the arrow points to it. Story cards between
+  chapters and the lines during play each have one **Skip** button.
+- **Hold** objectives: stay inside the glowing circle until the bar fills (the clock pauses while
+  nobody is in it); zombies keep coming from every side.
+- Losing offers **Retry from checkpoint** (most chapters save one mid-way) or **Restart chapter**.
+
 ## Multiplayer
 
 Menu → **Multiplayer** → **Create room** shows a 4-letter code. Friends tap **Multiplayer**, type
@@ -98,6 +118,7 @@ src/
   main.ts              entry: menus, solo / host / guest flows, main loop
   config.ts            all gameplay tuning (speeds, horde size, damage, timers, camera, network)
   settings.ts          persisted player settings
+  storyProgress.ts     story chapters unlocked / finished on this device
   core/                math helpers, seeded RNG
   sim/                 game logic only, no rendering (runs on the host in multiplayer)
     Simulation.ts      authoritative state: physics, survivors, zombie AI, javelins, pickups, rules
@@ -106,7 +127,9 @@ src/
     steering.ts        obstacle lookup for steering
     mapLayout.ts       map layout format: start, hut, route, hills, ponds, rivers, ridges, bamboo, density, theme
     maps/              the maps themselves (one file each), randomValley.ts (layout generator),
-                       and the list in index.ts
+                       and the list in index.ts; story/ holds the five story chapter maps
+    story/             story mode: chapters.ts (the script: objectives, lines, cards, rules),
+                       Mission.ts (runs a chapter inside the simulation), docBrain.ts (Doc's AI)
     terrain.ts         height field + terrain grid, water / bridge / ridge / ice queries
     river.ts           smoothed curves for rivers and ridges; bridges, fords, passes
     route.ts           the way from camp to hut (HUD arrow, bots, spawning, weapon racks)
@@ -121,6 +144,7 @@ src/
     pandaModel.ts      survivor panda model + animation
     horde.ts           all zombies via instanced meshes
     pickups.ts         bamboo snacks, weapon racks, javelins
+    storyView.ts       story items, the zone to hold, the objective beam
     effects.ts         blood, dust, splashes, sparkles, blood splats
     nameTag.ts         floating names with health bars
     weaponModels.ts    knife / axe / javelin models
@@ -130,7 +154,7 @@ src/
   net/                 PeerJS host & client, message protocol, compact snapshot codec
   audio/               synthesised sound effects and music (no audio files)
   input/               joystick, tilt, tap & swipe, keyboard, gamepad → PlayerInput
-  ui/                  menu, lobby, settings, HUD (plain DOM)
+  ui/                  menu, lobby, settings, HUD, story menu / cards / dialogue (plain DOM)
 ```
 
 The simulation and the renderer only talk through `PlayerInput` (in) and `Snapshot` (out), which is
@@ -157,6 +181,7 @@ everyone, so bump `PROTOCOL_VERSION` in `src/net/protocol.ts` when you do.
    - ✅ C. Snowy Pass (winding route between cliffs)
    - ✅ D. Random Valley (new generated layout every match)
 8. ✅ Sleeping zombies (noise and sneaking) and firecrackers
+9. ✅ Story mode: *Find the Cure*, 5 chapters (solo + bots)
 
 Ideas next: special zombie types, Android packaging (Capacitor or PWABuilder), host
 migration in multiplayer, client-side prediction for smoother guest movement.

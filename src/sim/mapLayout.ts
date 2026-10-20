@@ -1,7 +1,16 @@
+import type { WeaponType } from './types';
+
 export interface Circle {
   x: number;
   z: number;
   r: number;
+}
+
+/** A building on the map (story locations). Solid, with flat ground around it. */
+export interface Landmark extends Circle {
+  kind: 'radio' | 'clinic' | 'lab';
+  /** The door faces this point. */
+  face: { x: number; z: number };
 }
 
 export interface Hill extends Circle {
@@ -133,6 +142,12 @@ export interface MapLayout {
   rivers: readonly River[];
   ridges: readonly Ridge[];
   thickets: readonly Circle[];
+  /** Buildings; `r` is the solid footprint. */
+  landmarks?: readonly Landmark[];
+  /** 'none': no rescue hut at the goal (story chapters that end somewhere else). Default 'hut'. */
+  goalStyle?: 'hut' | 'none';
+  /** Weapons on the racks along the route, in order (default: a mix of all three). */
+  racks?: readonly WeaponType[];
   density: MapDensity;
   theme: MapTheme;
 }

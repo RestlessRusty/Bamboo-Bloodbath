@@ -6,6 +6,7 @@ import { el } from './dom';
 import { MapPicker } from './MapPicker';
 
 export interface MenuHandlers {
+  onStory(): void;
   onPlaySolo(): void;
   onMultiplayer(): void;
   onSettings(): void;
@@ -61,6 +62,7 @@ export class Menu {
         </div>
         <div data-ref="map"></div>
         <div class="menu-buttons">
+          <button class="btn primary big story" data-act="story">Story</button>
           <button class="btn primary big" data-act="solo">Play solo</button>
           <button class="btn" data-act="multi">Multiplayer</button>
           <button class="btn ghost" data-act="settings">Settings</button>
@@ -93,6 +95,9 @@ export class Menu {
       const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
       if (!t || (t as HTMLButtonElement).disabled) return;
       switch (t.dataset.act) {
+        case 'story':
+          h.onStory();
+          break;
         case 'solo':
           h.onPlaySolo();
           break;
@@ -128,6 +133,7 @@ export class Menu {
   show(message = ''): void {
     this.ref('toast').textContent = message;
     this.mapPicker.set(this.settings.map, true); // may have changed in a lobby
+    this.refresh(); // bot count may have changed in the story menu
     this.el.hidden = false;
   }
 

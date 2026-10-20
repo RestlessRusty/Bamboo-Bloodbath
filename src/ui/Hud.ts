@@ -3,15 +3,22 @@ import type { Route } from '../sim/route';
 import type { PlayerSpec, Snapshot, SurvivorSnap } from '../sim/types';
 import { el, formatTime } from './dom';
 
-export type EndMode = 'solo' | 'host' | 'guest';
+export type EndMode = 'solo' | 'host' | 'guest' | 'story';
 
 export interface HudHandlers {
   onPause(): void;
   onResume(): void;
   onSettings(): void;
+  /** Play again (solo) / restart the chapter (story). */
   onRestart(): void;
   onLobby(): void;
   onQuit(): void;
+  /** Story: chapter won, go on. */
+  onNext(): void;
+  /** Story: retry from the last checkpoint. */
+  onCheckpoint(): void;
+  /** Story: back to the chapter list. */
+  onChapters(): void;
 }
 
 interface TeamRow {
@@ -99,6 +106,10 @@ export class Hud {
           <p class="hint" data-ref="end-wait">Waiting for the host…</p>
           <button class="btn primary" data-act="restart" data-end="solo">Play again</button>
           <button class="btn primary" data-act="lobby" data-end="host">Back to lobby</button>
+          <button class="btn primary" data-act="next" data-end="story-won">Continue</button>
+          <button class="btn primary" data-act="checkpoint" data-end="story-cp">Retry from checkpoint</button>
+          <button class="btn" data-act="restart" data-end="story-lost">Restart chapter</button>
+          <button class="btn ghost" data-act="chapters" data-end="story">Chapters</button>
           <button class="btn ghost" data-act="quit" data-end="solo host guest">Menu</button>
         </div>
       </div>`,
@@ -135,6 +146,9 @@ export class Hud {
       else if (act === 'restart') h.onRestart();
       else if (act === 'lobby') h.onLobby();
       else if (act === 'quit') h.onQuit();
+      else if (act === 'next') h.onNext();
+      else if (act === 'checkpoint') h.onCheckpoint();
+      else if (act === 'chapters') h.onChapters();
     });
   }
 
@@ -152,7 +166,7 @@ export class Hud {
     for (const s of specs) {
       if (s.id === localId) continue;
       const row = el('div', 'team-row', `<span class="team-icon"></span><span class="team-name"></span><div class="team-bar"><div></div></div>`);
-      row.querySelector('.team-name')!.textContent = s.bot ? `${s.name} (bot)` : s.name;
+      row.querySelector('.team-name')!.textContent = s.bot && !s.npc ? `${s.name} (bot)` : s.name;
       this.team.appendChild(row);
       this.rows.set(s.id, { row, fill: row.querySelector<HTMLElement>('.team-bar > div')!, icon: row.querySelector<HTMLElement>('.team-icon')! });
     }
@@ -181,12 +195,18 @@ export class Hud {
     this.msgTimer = window.setTimeout(() => this.msg.classList.remove('show'), ms);
   }
 
-  showEnd(won: boolean, text: string, mode: EndMode): void {
-    this.ref('end-title').textContent = won ? 'Rescued!' : 'Game over';
+  /** `checkpoint`: story mode can retry from a checkpoint. */
+  showEnd(won: boolean, text: string, mode: EndMode, title = won ? 'Rescued!' : 'Game over', checkpoint = false): void {
+    this.ref('end-title').textContent = title;
     this.ref('end-text').textContent = text;
     this.ref('end-wait').hidden = mode !== 'guest';
+    const tags = new Set<string>([mode]);
+    if (mode === 'story') {
+      tags.add(won ? 'story-won' : 'story-lost');
+      if (!won && checkpoint) tags.add('story-cp');
+    }
     for (const b of this.endPanel.querySelectorAll<HTMLElement>('[data-end]')) {
-      b.hidden = !(b.dataset.end ?? '').split(' ').includes(mode);
+      b.hidden = !(b.dataset.end ?? '').split(' ').some((t) => tags.has(t));
     }
     this.endPanel.classList.toggle('won', won);
     this.pausePanel.hidden = true;
@@ -195,9 +215,11 @@ export class Hud {
 
   update(snap: Snapshot, fps: number | null): void {
     this.time += 1 / 60;
+    // No clock (story chapters without a time limit): no timer.
+    this.timer.hidden = snap.timeLeft < 0;
     const t = formatTime(snap.timeLeft);
     if (this.timer.textContent !== t) this.timer.textContent = t;
-    this.timer.classList.toggle('urgent', snap.timeLeft < 30);
+    this.timer.classList.toggle('urgent', snap.timeLeft >= 0 && snap.timeLeft < 30);
 
     const me = snap.survivors.find((s) => s.id === this.localId);
     this.updateMe(me, snap);
@@ -205,8 +227,21 @@ export class Hud {
     this.updateRevive(snap, me);
 
     const active = me?.state === 'active';
-    this.goalBox.hidden = !me || !this.route;
-    if (me && this.route) {
+    const story = snap.story;
+    if (story) {
+      // Story: the arrow points at the current objective (via a pass or bridge on the way).
+      const a = story.arrow;
+      this.goalBox.hidden = !me || !a;
+      if (me && a) {
+        this.arrow.style.transform = `rotate(${Math.atan2(a.x - me.x, -(a.z - me.z))}rad)`;
+        this.arrow.style.visibility = active ? 'visible' : 'hidden';
+        this.setText(this.dist, active ? `${Math.round(story.dist)} m` : '');
+        this.setText(this.saved, '');
+      }
+    } else {
+      this.goalBox.hidden = !me || !this.route;
+    }
+    if (me && this.route && !story) {
       // Point at the next waypoint (a pass, say) and show the distance left along the way.
       const { next, remaining } = this.route.locate(me.x, me.z);
       const dx = next.x - me.x;

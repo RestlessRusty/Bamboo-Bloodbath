@@ -16,14 +16,31 @@ import {
 } from '../config';
 import { approachAngle } from '../core/math';
 import { Rng } from '../core/rng';
-import { BotBrain, type BotWorld } from './bots';
+import { BotBrain, type BotWorld, type Brain } from './bots';
 import type { BambooSpot, Cracker, CrackerDrop, Javelin, RackSlot, Survivor, Zombie } from './entities';
 import type { GameMap } from './gameMap';
 import type { Circle } from './mapLayout';
 import { RAPIER } from './physics';
 import { Obstacles } from './steering';
+import type { Mission, MissionHost } from './story/Mission';
+import type { HordeRules } from './story/types';
 import { NO_INPUT, type GameEvent, type MatchPhase, type PlayerInput, type PlayerSpec, type Snapshot } from './types';
 import { PAW, WEAPONS, type MeleeDef } from './weapons';
+
+/** Rule changes for one match (story chapters). Everything defaults to the normal game. */
+export interface SimOptions {
+  /** Seconds on the clock, or null for no time limit. Default MATCH_TIME. */
+  timeLimit?: number | null;
+  horde?: Partial<HordeRules>;
+  /** Share of the starting horde that's asleep. */
+  sleepShare?: number;
+  /** Where the group starts, facing `toward`. Default: the camp, facing the way out. */
+  spawn?: { x: number; z: number; toward: { x: number; z: number } };
+  /** Reaching the hut takes a panda off the map and wins the match. Default true. */
+  goalRescue?: boolean;
+  /** Story objectives; it decides when the match is won. */
+  mission?: Mission | null;
+}
 
 /** Height of the capsule centre above the feet (same for pandas and zombies). */
 const CENTER_HEIGHT = SURVIVOR.halfHeight + SURVIVOR.radius;
@@ -52,7 +69,7 @@ function distToSegment(x: number, z: number, a: { x: number; z: number }, b: { x
  * Authoritative game state. Pure logic, no rendering: in single player it runs locally,
  * in multiplayer it runs on the host and the other phones only draw its snapshots.
  */
-export class Simulation implements BotWorld {
+export class Simulation implements BotWorld, MissionHost {
   readonly survivors: Survivor[] = [];
   readonly zombies: Zombie[] = [];
   readonly javelins: Javelin[] = [];
@@ -67,31 +84,58 @@ export class Simulation implements BotWorld {
   private readonly rng = new Rng((Math.random() * 4294967296) >>> 0);
   private events: GameEvent[] = [];
   private tick = 0;
-  private timeLeft = MATCH_TIME;
+  private readonly timed: boolean;
+  private timeLeft: number;
   private phase: MatchPhase = 'playing';
   private rescued = 0;
   private nextZombieId = 1;
   private nextJavelinId = 1;
   private nextCrackerId = 1;
   private spawnTimer = 0;
+  private readonly horde: HordeRules;
+  private readonly sleepShare: number;
+  private readonly goalRescue: boolean;
+  private readonly mission: Mission | null;
+  private readonly spawnAt: { x: number; z: number; toward: { x: number; z: number } };
 
   constructor(
     readonly map: GameMap,
     specs: readonly PlayerSpec[],
+    options: SimOptions = {},
   ) {
     this.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
     this.world.timestep = SIM_DT;
+
+    this.timed = options.timeLimit !== null;
+    this.timeLeft = options.timeLimit ?? MATCH_TIME;
+    this.horde = {
+      base: ZOMBIE.base,
+      perSurvivor: ZOMBIE.perSurvivor,
+      progressBonus: ZOMBIE.progressBonus,
+      max: ZOMBIE.max,
+      ...options.horde,
+    };
+    this.sleepShare = options.sleepShare ?? SLEEP.share;
+    this.goalRescue = options.goalRescue ?? true;
+    this.mission = options.mission ?? null;
+    const { start } = map.layout;
+    this.spawnAt = options.spawn ?? { x: start.x, z: start.z, toward: map.route.pts[1] }; // first waypoint, or the hut
 
     const { props } = map;
     this.obstacles = new Obstacles([
       ...props.trees.filter((t) => t.collide).map((t) => ({ x: t.x, z: t.z, r: t.radius })),
       ...props.rocks.map((r) => ({ x: r.x, z: r.z, r: r.radius })),
+      ...(map.layout.landmarks ?? []).map((l) => ({ x: l.x, z: l.z, r: l.r })),
     ]);
     this.bamboo = props.bambooSpots.map((b) => ({ ...b, active: true, respawn: 0 }));
     this.racks = props.racks.map((r) => ({ ...r }));
 
     this.buildStatic();
-    specs.forEach((spec, i) => this.spawnSurvivor(spec, i));
+    specs.filter((s) => !s.npc).forEach((spec, i) => this.spawnSurvivor(spec, i));
+    this.mission?.init(
+      this,
+      specs.filter((s) => s.npc),
+    );
     this.spawnInitialHorde();
   }
 
@@ -100,7 +144,7 @@ export class Simulation implements BotWorld {
   step(inputs: ReadonlyMap<string, PlayerInput>): void {
     if (this.phase !== 'playing') return;
     this.tick++;
-    this.timeLeft = Math.max(0, this.timeLeft - SIM_DT);
+    if (this.timed) this.timeLeft = Math.max(0, this.timeLeft - SIM_DT);
 
     for (const s of this.survivors) {
       if (s.state === 'active') {
@@ -119,6 +163,7 @@ export class Simulation implements BotWorld {
     this.updateJavelins();
     this.updateCrackers();
     this.updatePickups();
+    this.mission?.step(this);
     this.updateSpawning();
     this.cleanupZombies();
     this.checkEnd();
@@ -130,7 +175,7 @@ export class Simulation implements BotWorld {
     this.events = [];
     return {
       tick: this.tick,
-      timeLeft: this.timeLeft,
+      timeLeft: this.clock,
       phase: this.phase,
       rescued: this.rescued,
       survivors: this.survivors.map((s) => ({
@@ -173,7 +218,33 @@ export class Simulation implements BotWorld {
       bamboo: this.bamboo.map((b) => b.active),
       racks: this.racks.map((r) => r.weapon),
       events,
+      story: this.mission?.snapshot(),
     };
+  }
+
+  /** Seconds left on the clock, -1 when the match is untimed. */
+  get clock(): number {
+    return this.timed ? this.timeLeft : -1;
+  }
+
+  emit(ev: GameEvent): void {
+    this.events.push(ev);
+  }
+
+  /** Puts a survivor on the map at (x, z), e.g. a story character, facing the hut. */
+  addSurvivor(spec: PlayerSpec, x: number, z: number, brain: Brain | null): Survivor {
+    const { goal } = this.map.layout;
+    const s = this.placeSurvivor(spec, x, z, Math.atan2(goal.x - x, goal.z - z));
+    s.brain = brain;
+    return s;
+  }
+
+  /** A zombie that heads for the group wherever it is. False if (x, z) isn't a fair spot. */
+  spawnHunter(x: number, z: number): boolean {
+    if (!this.validSpawn(x, z)) return false;
+    this.spawnZombie(x, z, null);
+    this.zombies[this.zombies.length - 1].hunt = true;
+    return true;
   }
 
   /** Hand a player's panda to (or back from) the bot AI, e.g. when someone disconnects. */
@@ -327,6 +398,9 @@ export class Simulation implements BotWorld {
     for (const r of props.rocks) {
       world.createCollider(RAPIER.ColliderDesc.cylinder(1.2, r.radius).setTranslation(r.x, r.y, r.z));
     }
+    for (const l of layout.landmarks ?? []) {
+      world.createCollider(RAPIER.ColliderDesc.cylinder(4, l.r).setTranslation(l.x, this.map.terrain.heightAt(l.x, l.z) + 2, l.z));
+    }
 
     // Ridges: a chain of tall invisible boxes along the spine, skipping the passes.
     for (const r of this.map.terrain.ridges) {
@@ -376,24 +450,27 @@ export class Simulation implements BotWorld {
   }
 
   private spawnSurvivor(spec: PlayerSpec, index: number): void {
-    const { start } = this.map.layout;
-    const first = this.map.route.pts[1]; // first waypoint, or the hut
+    const start = this.spawnAt;
+    const first = start.toward;
     const [fwd, side] = SPAWN_OFFSETS[index % SPAWN_OFFSETS.length];
     const len = dist2d(start, first) || 1;
     const fx = (first.x - start.x) / len;
     const fz = (first.z - start.z) / len;
     const x = start.x + fx * fwd - fz * side;
     const z = start.z + fz * fwd + fx * side;
-    const toGoal = Math.atan2(first.x - x, first.z - z);
-    this.survivors.push({
+    this.placeSurvivor(spec, x, z, Math.atan2(first.x - x, first.z - z));
+  }
+
+  private placeSurvivor(spec: PlayerSpec, x: number, z: number, rot: number): Survivor {
+    const s: Survivor = {
       spec,
       body: this.createBody(x, z),
       x,
       y: this.map.terrain.heightAt(x, z),
       z,
-      rot: toGoal,
-      faceX: Math.sin(toGoal),
-      faceZ: Math.cos(toGoal),
+      rot,
+      faceX: Math.sin(rot),
+      faceZ: Math.cos(rot),
       speed: 0,
       inWater: false,
       hidden: false,
@@ -416,8 +493,12 @@ export class Simulation implements BotWorld {
       lastRack: -1,
       crackers: CRACKER.start,
       crackerCd: 0,
-      brain: spec.bot ? new BotBrain(index) : null,
-    });
+      brain: spec.bot ? new BotBrain(this.survivors.length) : null,
+      npc: !!spec.npc,
+      shielded: false,
+    };
+    this.survivors.push(s);
+    return s;
   }
 
   private spawnZombie(x: number, z: number, from: string | null, sleeper = false, asleep = false): void {
@@ -440,6 +521,7 @@ export class Simulation implements BotWorld {
       look: Math.floor(this.rng.next() * 4),
       from,
       sleeper,
+      hunt: false,
       speedMul: this.rng.range(0.85, 1.1),
       target: null,
       lure: null,
@@ -463,8 +545,8 @@ export class Simulation implements BotWorld {
     for (let i = 0; i < 400 && this.zombies.length < want; i++) {
       const x = this.rng.range(-half, half);
       const z = this.rng.range(-half, half);
-      if (dist2d({ x, z }, this.map.layout.start) < 32) continue;
-      if (this.validSpawn(x, z)) this.spawnZombie(x, z, null, true, this.rng.next() < SLEEP.share);
+      if (dist2d({ x, z }, this.spawnAt) < 32) continue;
+      if (this.validSpawn(x, z)) this.spawnZombie(x, z, null, true, this.rng.next() < this.sleepShare);
     }
   }
 
@@ -721,7 +803,7 @@ export class Simulation implements BotWorld {
       return;
     }
 
-    if (s.state === 'active' && dist2d(s, this.map.layout.goal) < GOAL_RADIUS) {
+    if (this.goalRescue && s.state === 'active' && dist2d(s, this.map.layout.goal) < GOAL_RADIUS) {
       s.state = 'rescued';
       s.speed = 0;
       this.rescued++;
@@ -932,10 +1014,11 @@ export class Simulation implements BotWorld {
     let best: Survivor | null = null;
     let bestD = Infinity;
     for (const s of this.survivors) {
-      if (s.state !== 'active') continue;
+      if (s.state !== 'active' || s.shielded) continue;
       const d = dist2d(s, z);
       let sense = s.hidden ? ZOMBIE.hiddenSense : ZOMBIE.sense;
       if (s === z.target) sense *= 1.3; // stick with the current victim a bit longer
+      if (z.hunt) sense = Infinity;
       if (d < sense && d < bestD) {
         bestD = d;
         best = s;
@@ -1005,16 +1088,17 @@ export class Simulation implements BotWorld {
   }
 
   private desiredHorde(): number {
-    const alive = this.survivors.filter((s) => s.state === 'active' || s.state === 'downed').length;
-    const raw = (ZOMBIE.base + ZOMBIE.perSurvivor * alive) * (1 + ZOMBIE.progressBonus * this.progress());
-    return Math.min(ZOMBIE.max, Math.round(raw));
+    const alive = this.survivors.filter((s) => !s.npc && (s.state === 'active' || s.state === 'downed')).length;
+    const h = this.horde;
+    const raw = (h.base + h.perSurvivor * alive) * (1 + h.progressBonus * this.progress());
+    return Math.min(h.max, Math.round(raw));
   }
 
   /** 0 at the start camp, 1 at the rescue hut (best survivor). */
   private progress(): number {
     let best = 0;
     for (const s of this.survivors) {
-      if (s.state === 'dead') continue;
+      if (s.state === 'dead' || s.npc) continue;
       const { route } = this.map;
       const p = s.state === 'rescued' ? 1 : route.locate(s.x, s.z).along / route.length;
       best = Math.max(best, p);
@@ -1034,7 +1118,7 @@ export class Simulation implements BotWorld {
   }
 
   private updateSpawning(): void {
-    const anchors = this.survivors.filter((s) => s.state === 'active' || s.state === 'downed');
+    const anchors = this.survivors.filter((s) => !s.npc && (s.state === 'active' || s.state === 'downed'));
     if (!anchors.length) return;
     this.spawnTimer -= SIM_DT;
     const alive = this.zombies.reduce((n, z) => n + (z.state === 'dying' ? 0 : 1), 0);
@@ -1058,7 +1142,7 @@ export class Simulation implements BotWorld {
   }
 
   private cleanupZombies(): void {
-    const anchors = this.survivors.filter((s) => s.state === 'active' || s.state === 'downed');
+    const anchors = this.survivors.filter((s) => !s.npc && (s.state === 'active' || s.state === 'downed'));
     let rearmost = -1; // route distance of the furthest-behind survivor, worked out on demand
     for (let i = this.zombies.length - 1; i >= 0; i--) {
       const z = this.zombies[i];
@@ -1341,6 +1425,14 @@ export class Simulation implements BotWorld {
   }
 
   private checkEnd(): void {
+    const m = this.mission;
+    if (m) {
+      // Story: the mission decides; it's lost when the player is gone (bots alone can't do the objectives).
+      if (!m.outcome && !this.survivors.some((s) => !s.spec.bot && (s.state === 'active' || s.state === 'downed'))) m.lose('wiped');
+      if (!m.outcome && this.timed && this.timeLeft <= 0) m.lose('time');
+      if (m.outcome) this.phase = m.outcome;
+      return;
+    }
     const stillPlaying = this.survivors.some((s) => s.state === 'active' || s.state === 'downed');
     if (!stillPlaying || this.timeLeft <= 0) this.phase = this.rescued > 0 ? 'won' : 'lost';
   }

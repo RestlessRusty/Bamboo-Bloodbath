@@ -1,5 +1,5 @@
 import type { RigidBody } from '@dimforge/rapier3d-compat';
-import type { BotBrain } from './bots';
+import type { Brain } from './bots';
 import type { PlayerSpec, SurvivorState, WeaponType, ZombieState } from './types';
 
 /** Internal (host-side) state of the simulation's entities. */
@@ -37,7 +37,11 @@ export interface Survivor {
   lastRack: number;
   crackers: number;
   crackerCd: number;
-  brain: BotBrain | null;
+  brain: Brain | null;
+  /** Story character (Doc): not counted as a teammate for the horde size or the goal. */
+  npc: boolean;
+  /** Zombies leave this survivor alone (Doc waiting somewhere while nobody is around). */
+  shielded: boolean;
 }
 
 export interface Zombie {
@@ -59,6 +63,8 @@ export interface Zombie {
   from: string | null;
   /** Placed on the map at match start; not recycled until the group has gone past it. */
   sleeper: boolean;
+  /** Sent after the group (story siege waves): knows where everyone is, however far. */
+  hunt: boolean;
   speedMul: number;
   target: Survivor | null;
   /** A crackling firecracker it's heading for instead of a survivor. */

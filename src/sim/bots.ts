@@ -16,6 +16,11 @@ export interface BotWorld {
   detour(x: number, z: number, tx: number, tz: number): { x: number; z: number; cost: number; wall: boolean } | null;
 }
 
+/** Anything that drives a survivor instead of a player's controls. */
+export interface Brain {
+  think(me: Survivor, w: BotWorld, dt: number): PlayerInput;
+}
+
 /** Which side of the leader each bot buddy walks on. */
 const SLOT_SIDE = [-1, 1, 0, 1];
 
@@ -25,7 +30,7 @@ export function botName(index: number): string {
   return BOT_NAMES[index % BOT_NAMES.length];
 }
 
-function nearest<T extends { x: number; z: number }>(items: readonly T[], from: { x: number; z: number }, maxD: number): T | null {
+export function nearest<T extends { x: number; z: number }>(items: readonly T[], from: { x: number; z: number }, maxD: number): T | null {
   let best: T | null = null;
   let bestD = maxD;
   for (const it of items) {
@@ -43,17 +48,78 @@ const PACK_SIZE = 4;
 const PACK_RANGE = 7;
 
 /**
- * A simple buddy AI that produces the same PlayerInput a human would.
- * Priorities: revive downed friends > flee when nearly dead > eat > pick up javelins and firecrackers
- * > fight > follow the leader. Sleeping zombies are left alone (and tiptoed past).
+ * Walks a survivor towards a point the way a player would: through passes and over bridges,
+ * around trees, and sideways for a moment when stuck on something.
  */
-export class BotBrain {
+export class Walker {
   private checkT = 0;
   private lastX = NaN;
   private lastZ = NaN;
   private detourT = 0;
   private detourX = 0;
   private detourZ = 0;
+
+  /**
+   * Sets the movement in `out` to head for (tx, tz), stopping within `arrive` (NaN target: stand still).
+   * `maxSpeed` caps how far the stick is pushed (sneaking). Call once per tick.
+   */
+  walk(me: Survivor, w: BotWorld, out: PlayerInput, tx: number, tz: number, arrive: number, dt: number, maxSpeed = 1): void {
+    if (!Number.isNaN(tx)) {
+      const dx = tx - me.x;
+      const dz = tz - me.z;
+      const d = Math.hypot(dx, dz);
+      if (d > arrive) {
+        // Use a pass when a ridge is in the way; a bridge or ford for water unless swimming is much shorter.
+        let wx = tx;
+        let wz = tz;
+        let avoidWater = !w.map.terrain.isWater(tx, tz);
+        const via = w.detour(me.x, me.z, tx, tz);
+        if (via && (via.wall || via.cost < d * 2 + 15)) {
+          wx = via.x;
+          wz = via.z;
+        } else if (via) {
+          avoidWater = false; // the crossing is too far: swim
+        }
+        const wl = Math.hypot(wx - me.x, wz - me.z) || 1;
+        let dir = w.steer(me.x, me.z, (wx - me.x) / wl, (wz - me.z) / wl, avoidWater);
+        if (this.detourT > 0) {
+          const x = dir.x * 0.3 + this.detourX;
+          const z = dir.z * 0.3 + this.detourZ;
+          const l = Math.hypot(x, z) || 1;
+          dir = { x: x / l, z: z / l };
+        }
+        const sp = Math.min(maxSpeed, d / 1.5 + 0.3, 1);
+        out.mx = dir.x * sp;
+        out.mz = dir.z * sp;
+      }
+    }
+
+    // Stuck on something? Take a short sideways detour.
+    this.detourT -= dt;
+    this.checkT -= dt;
+    if (this.checkT <= 0) {
+      const wanting = Math.hypot(out.mx, out.mz) > 0.3;
+      const moved = Math.hypot(me.x - this.lastX, me.z - this.lastZ);
+      if (wanting && moved < 0.35) {
+        const s = Math.random() < 0.5 ? -1 : 1;
+        this.detourT = 0.9;
+        this.detourX = -out.mz * s;
+        this.detourZ = out.mx * s;
+      }
+      this.lastX = me.x;
+      this.lastZ = me.z;
+      this.checkT = 0.8;
+    }
+  }
+}
+
+/**
+ * A simple buddy AI that produces the same PlayerInput a human would.
+ * Priorities: revive downed friends > flee when nearly dead > eat > pick up javelins and firecrackers
+ * > fight > follow the leader. Sleeping zombies are left alone (and tiptoed past).
+ */
+export class BotBrain implements Brain {
+  private readonly walker = new Walker();
 
   constructor(private readonly slot: number) {}
 
@@ -146,55 +212,8 @@ export class BotBrain {
       goTo(next.x, next.z, 0);
     }
 
-    if (!Number.isNaN(tx)) {
-      const dx = tx - me.x;
-      const dz = tz - me.z;
-      const d = Math.hypot(dx, dz);
-      if (d > arrive) {
-        // Use a pass when a ridge is in the way; a bridge or ford for water unless swimming is much shorter.
-        let wx = tx;
-        let wz = tz;
-        let avoidWater = !w.map.terrain.isWater(tx, tz);
-        const via = w.detour(me.x, me.z, tx, tz);
-        if (via && (via.wall || via.cost < d * 2 + 15)) {
-          wx = via.x;
-          wz = via.z;
-        } else if (via) {
-          avoidWater = false; // the crossing is too far: swim
-        }
-        const wl = Math.hypot(wx - me.x, wz - me.z) || 1;
-        let dir = w.steer(me.x, me.z, (wx - me.x) / wl, (wz - me.z) / wl, avoidWater);
-        if (this.detourT > 0) {
-          const x = dir.x * 0.3 + this.detourX;
-          const z = dir.z * 0.3 + this.detourZ;
-          const l = Math.hypot(x, z) || 1;
-          dir = { x: x / l, z: z / l };
-        }
-        let sp = Math.min(1, d / 1.5 + 0.3);
-        // Tiptoe past sleepers unless something awake is already close.
-        if (sleeperNear && td > 6) sp = Math.min(sp, NOISE.sneakFrac * 0.9);
-        out.mx = dir.x * sp;
-        out.mz = dir.z * sp;
-      }
-    }
-
-    // Stuck on something? Take a short sideways detour.
-    this.detourT -= dt;
-    this.checkT -= dt;
-    if (this.checkT <= 0) {
-      const wanting = Math.hypot(out.mx, out.mz) > 0.3;
-      const moved = Math.hypot(me.x - this.lastX, me.z - this.lastZ);
-      if (wanting && moved < 0.35) {
-        const s = Math.random() < 0.5 ? -1 : 1;
-        this.detourT = 0.9;
-        this.detourX = -out.mz * s;
-        this.detourZ = out.mx * s;
-      }
-      this.lastX = me.x;
-      this.lastZ = me.z;
-      this.checkT = 0.8;
-    }
-
+    // Tiptoe past sleepers unless something awake is already close.
+    this.walker.walk(me, w, out, tx, tz, arrive, dt, sleeperNear && td > 6 ? NOISE.sneakFrac * 0.9 : 1);
     return out;
   }
 }

@@ -5,12 +5,15 @@ import { WATER_LEVEL } from '../sim/terrain';
 import type { GameEvent, PlayerSpec, Snapshot } from '../sim/types';
 import { WEAPONS } from '../sim/weapons';
 import type { Hud } from '../ui/Hud';
+import type { StoryHud } from '../ui/StoryHud';
 
 export interface PresentContext {
   renderer: Renderer;
   hud: Hud;
   sfx: Sfx;
   settings: Settings;
+  /** Story objective and dialogue (only shows anything during story chapters). */
+  story?: StoryHud;
 }
 
 /** Turns simulation events into sounds, particles, screen shake, vibration and HUD messages. */
@@ -138,6 +141,24 @@ export class Presenter {
           sfx.play('pickup', posOf(ev.id), 0.7);
           if (mine(ev.id)) hud.flash('Picked up a firecracker!', 1500);
           break;
+        case 'say':
+          this.ctx.story?.say(ev.who, ev.text);
+          break;
+        case 'collect':
+          sfx.play('pickup', ev);
+          renderer.effects.sparkle(ev.x, ev.y, ev.z);
+          break;
+        case 'objective':
+          sfx.play('revived', undefined, 0.6);
+          break;
+        case 'checkpoint':
+          hud.flash('Checkpoint reached', 1800);
+          break;
+        case 'heal': {
+          const p = posOf(ev.id);
+          renderer.effects.sparkle(p.x, p.y, p.z, 0x9cff7a);
+          break;
+        }
       }
     }
   }

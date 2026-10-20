@@ -16,16 +16,19 @@ export interface WorldView {
 export function buildWorld(map: GameMap): WorldView {
   const group = new THREE.Group();
   const terrain = buildTerrain(map);
-  const goal = buildGoal(map);
+  const goal = map.layout.goalStyle === 'none' ? null : buildGoal(map);
   const camp = buildCamp(map);
+  const landmarks = buildLandmarks(map);
   group.add(terrain, buildWater(map), buildCrossings(map), ...buildTrees(map), buildRocks(map), ...buildBamboo(map), ...buildDecor(map));
-  group.add(camp.group, goal.group);
+  group.add(camp.group, landmarks.group);
+  if (goal) group.add(goal.group);
   return {
     group,
     terrain,
     update: (_dt, time) => {
-      goal.update(time);
+      goal?.update(time);
       camp.update(time);
+      landmarks.update(time);
     },
   };
 }
@@ -586,6 +589,102 @@ function buildCamp(map: GameMap): { group: THREE.Group; update(time: number): vo
       const f = 1 + Math.sin(time * 17) * 0.08 + Math.sin(time * 23) * 0.06;
       flameOuter.scale.set(1, f, 1);
       flameInner.scale.set(1, 2 - f, 1);
+    },
+  };
+}
+
+// ---------------------------------------------------------------- story buildings
+
+/** Radio cabin, clinic and research lab. Each is built facing +Z (door side), then turned to `face`. */
+function buildLandmarks(map: GameMap): { group: THREE.Group; update(time: number): void } {
+  const g = new THREE.Group();
+  const blinkers: THREE.MeshBasicMaterial[] = [];
+  const bubbles: THREE.Mesh[] = [];
+
+  for (const l of map.layout.landmarks ?? []) {
+    const b = new THREE.Group();
+    b.position.set(l.x, map.terrain.heightAt(l.x, l.z), l.z);
+    b.rotation.y = Math.atan2(l.face.x - l.x, l.face.z - l.z);
+    g.add(b);
+    const part = (geo: THREE.BufferGeometry, color: number, x: number, y: number, z: number, outline = 1.04) => {
+      const m = new THREE.Mesh(geo, toon(color));
+      m.position.set(x, y, z);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      b.add(m);
+      if (outline) addOutline(m, outline);
+      return m;
+    };
+    const light = (color: number, r: number, x: number, y: number, z: number) => {
+      const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1 });
+      const m = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 8), mat);
+      m.position.set(x, y, z);
+      b.add(m);
+      return mat;
+    };
+
+    if (l.kind === 'radio') {
+      // Little cabin with a lattice mast and a blinking red light.
+      part(new THREE.BoxGeometry(2.6, 2, 2.4), 0x9a6a3a, 0, 1, 0);
+      part(new THREE.BoxGeometry(3, 0.25, 2.8), 0x6b4423, 0, 2.1, 0);
+      part(new THREE.BoxGeometry(0.8, 1.4, 0.08), 0x4a2e18, 0.5, 0.75, 1.22, 0);
+      part(new THREE.BoxGeometry(0.7, 0.5, 0.08), 0xbfe8f7, -0.6, 1.3, 1.22, 0);
+      for (const [x, z] of [
+        [-0.9, -0.5],
+        [-0.2, -0.5],
+        [-0.9, -1.2],
+        [-0.2, -1.2],
+      ]) {
+        part(new THREE.CylinderGeometry(0.05, 0.07, 7, 5), 0x8c8f96, x, 3.5 + 2.1, z, 0);
+      }
+      for (let y = 3; y < 9; y += 1.5) part(new THREE.BoxGeometry(0.8, 0.06, 0.8), 0x8c8f96, -0.55, y, -0.85, 0);
+      part(new THREE.CylinderGeometry(0.03, 0.03, 2.2, 4), 0xdddddd, -0.55, 9.6 + 0.6, -0.85, 0);
+      blinkers.push(light(0xff3b30, 0.16, -0.55, 11.3, -0.85));
+    } else if (l.kind === 'clinic') {
+      // White house, red roof, red cross over the door.
+      part(new THREE.BoxGeometry(5, 3, 4), 0xf4f1ea, 0, 1.5, 0);
+      part(new THREE.ConeGeometry(3.9, 1.8, 4), 0xd8463f, 0, 3.9, 0).rotation.y = Math.PI / 4;
+      part(new THREE.BoxGeometry(1, 1.8, 0.08), 0x6b4423, 0, 0.9, 2.02, 0);
+      part(new THREE.BoxGeometry(0.9, 0.7, 0.08), 0xbfe8f7, -1.6, 1.7, 2.02, 0);
+      part(new THREE.BoxGeometry(0.9, 0.7, 0.08), 0xbfe8f7, 1.6, 1.7, 2.02, 0);
+      part(new THREE.BoxGeometry(0.9, 0.28, 0.1), 0xe2463f, 0, 2.45, 2.04, 0);
+      part(new THREE.BoxGeometry(0.28, 0.9, 0.1), 0xe2463f, 0, 2.45, 2.04, 0);
+      for (const x of [-1.8, 1.8]) part(new THREE.BoxGeometry(0.7, 0.7, 0.7), 0xb07a45, x, 0.35, 2.7, 1.06).rotation.y = x;
+    } else {
+      // Research lab: long block, dome, chimney, and a big cauldron bubbling out front.
+      part(new THREE.BoxGeometry(9, 4, 6), 0xb8c4cc, 0, 2, 0);
+      part(new THREE.BoxGeometry(9.4, 0.3, 6.4), 0x6f7a82, 0, 4.15, 0);
+      part(new THREE.SphereGeometry(2.2, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), 0xdfe8ee, -2, 4.3, -0.5);
+      part(new THREE.CylinderGeometry(0.35, 0.4, 2.4, 8), 0x8a6a5a, 3, 5.4, -1.5);
+      part(new THREE.BoxGeometry(1.6, 2.4, 0.08), 0x4f5a62, 0, 1.2, 3.02, 0);
+      for (const x of [-3.2, 3.2]) part(new THREE.BoxGeometry(1.4, 0.9, 0.08), 0x9fd8ef, x, 2.4, 3.02, 0);
+      part(new THREE.BoxGeometry(2.2, 0.5, 0.1), 0xffe066, 0, 3.3, 3.04, 0);
+      part(new THREE.SphereGeometry(1, 14, 10, 0, Math.PI * 2, Math.PI / 3, (Math.PI * 2) / 3), 0x3b3b44, 0, 1.15, 5.5);
+      part(new THREE.TorusGeometry(0.75, 0.08, 6, 20).rotateX(Math.PI / 2), 0x55555f, 0, 1.6, 5.5, 0);
+      const brew = new THREE.Mesh(new THREE.CircleGeometry(0.72, 20).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x9cff7a }));
+      brew.position.set(0, 1.58, 5.5);
+      b.add(brew);
+      const bubbleMat = new THREE.MeshBasicMaterial({ color: 0xc8ff9a, transparent: true, opacity: 0.85 });
+      for (let i = 0; i < 4; i++) {
+        const bubble = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), bubbleMat);
+        bubble.position.set(Math.sin(i * 2.1) * 0.4, 1.6, 5.5 + Math.cos(i * 2.1) * 0.4);
+        bubble.userData.phase = i / 4;
+        b.add(bubble);
+        bubbles.push(bubble);
+      }
+      blinkers.push(light(0x9cff7a, 0.12, 4.2, 3.4, 3.05));
+    }
+  }
+
+  return {
+    group: g,
+    update(time) {
+      blinkers.forEach((m, i) => (m.opacity = Math.sin(time * 4 + i) > 0 ? 1 : 0.15));
+      for (const bubble of bubbles) {
+        const t = (time * 0.7 + (bubble.userData.phase as number)) % 1;
+        bubble.position.y = 1.6 + t * 1.6;
+        bubble.scale.setScalar(1 - t * 0.6);
+      }
     },
   };
 }

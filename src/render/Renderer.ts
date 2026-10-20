@@ -10,6 +10,7 @@ import { NameTag } from './nameTag';
 import { PANDA_LOOKS, PandaModel } from './pandaModel';
 import { PickupsView } from './pickups';
 import { Snowfall } from './snowfall';
+import { StoryView } from './storyView';
 import { disposeObject } from './toon';
 import { buildWorld, type WorldView } from './world';
 
@@ -35,6 +36,7 @@ export class Renderer {
   private readonly horde = new HordeView();
   private pickups: PickupsView;
   private snow: Snowfall | null = null;
+  private story: StoryView | null = null;
   private readonly views = new Map<string, SurvivorView>();
   private readonly zombieTags = new Map<number, NameTag>();
   private specs = new Map<string, PlayerSpec>();
@@ -160,7 +162,7 @@ export class Renderer {
     this.specs = new Map(specs.map((s) => [s.id, s]));
     for (const spec of specs) {
       const model = new PandaModel(spec.variant, spec.weapon);
-      const tag = new NameTag(spec.name, spec.id === localId ? '#ffe066' : spec.bot ? '#cfe9ff' : '#ffffff');
+      const tag = new NameTag(spec.name, spec.id === localId ? '#ffe066' : spec.npc ? '#ffc2c2' : spec.bot ? '#cfe9ff' : '#ffffff');
       const ripple = new THREE.Mesh(
         RIPPLE_GEO,
         new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false }),
@@ -186,6 +188,11 @@ export class Renderer {
     this.zombieTags.clear();
     this.horde.update(0, [], [], 1, this.time, () => undefined);
     this.localPos = null;
+    if (this.story) {
+      this.scene.remove(this.story.group);
+      this.story.dispose();
+      this.story = null;
+    }
   }
 
   /** Draws the world between two snapshots (`alpha` 0..1). */
@@ -240,6 +247,13 @@ export class Renderer {
     this.updateZombieTags(prev.zombies, curr.zombies, alpha);
     this.pickups.update(this.time, prev, curr, alpha);
     this.effects.update(dt);
+    if (curr.story) {
+      if (!this.story) {
+        this.story = new StoryView(this.map);
+        this.scene.add(this.story.group);
+      }
+      this.story.update(this.time, curr.story);
+    }
 
     const f = focus ?? fallback;
     if (f) this.updateCamera(dt, f.x, f.y, f.z);
