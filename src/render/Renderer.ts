@@ -46,6 +46,12 @@ export class Renderer {
   private shakeAmt = 0;
   private localPos: { x: number; z: number } | null = null;
   private showcase: PandaModel | null = null;
+  /** Drag-to-spin for the showcase panda. */
+  private spin = 0;
+  private spinVel = 0;
+  private spinPending = 0;
+  private spinSway = 1;
+  private spinDrag: { id: number; x: number } | null = null;
   private time = 0;
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
@@ -81,6 +87,33 @@ export class Renderer {
 
     this.setQuality(quality);
     window.addEventListener('resize', () => this.resize());
+    this.bindShowcaseDrag();
+  }
+
+  /** Drag on the 3D view (or a modal's backdrop) to spin the showcase panda. */
+  private bindShowcaseDrag(): void {
+    const canvas = this.gl.domElement;
+    canvas.style.touchAction = 'none';
+    window.addEventListener('pointerdown', (e) => {
+      if (!this.showcase || this.spinDrag) return;
+      const t = e.target as Element;
+      if (t !== canvas && !t.classList?.contains('modal')) return;
+      this.spinDrag = { id: e.pointerId, x: e.clientX };
+      canvas.style.cursor = 'grabbing';
+    });
+    window.addEventListener('pointermove', (e) => {
+      const d = this.spinDrag;
+      if (!d || e.pointerId !== d.id) return;
+      this.spinPending += (e.clientX - d.x) * 0.012;
+      d.x = e.clientX;
+    });
+    const end = (e: PointerEvent) => {
+      if (!this.spinDrag || e.pointerId !== this.spinDrag.id) return;
+      this.spinDrag = null;
+      canvas.style.cursor = this.showcase ? 'grab' : '';
+    };
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
   }
 
   get currentMap(): GameMap {
@@ -369,6 +402,7 @@ export class Renderer {
     this.placeShowcase(m);
     this.scene.add(m.root);
     this.showcase = m;
+    if (!this.spinDrag) this.gl.domElement.style.cursor = 'grab';
   }
 
   private placeShowcase(m: PandaModel): void {
@@ -379,6 +413,10 @@ export class Renderer {
   clearShowcase(): void {
     if (this.showcase) this.scene.remove(this.showcase.root);
     this.showcase = null;
+    this.spinDrag = null;
+    this.spinVel = 0;
+    this.spinPending = 0;
+    this.gl.domElement.style.cursor = '';
   }
 
   updateShowcase(dt: number): void {
@@ -391,7 +429,18 @@ export class Renderer {
     const yaw = 0.55;
     const p = m.root.position;
     this.snow?.update(dt, this.time, p.x, p.y, p.z);
-    m.root.rotation.y = yaw + Math.sin(this.time * 0.6) * 0.5;
+    // While dragged the panda follows the pointer; let go and it coasts to a stop.
+    if (this.spinDrag) {
+      if (dt > 0) this.spinVel = lerp(this.spinVel, this.spinPending / dt, damp(15, dt));
+      this.spin += this.spinPending;
+    } else {
+      this.spin += this.spinVel * dt;
+      this.spinVel *= Math.exp(-3 * dt);
+    }
+    this.spinPending = 0;
+    const settled = !this.spinDrag && Math.abs(this.spinVel) < 0.3;
+    this.spinSway = lerp(this.spinSway, settled ? 1 : 0, damp(3, dt));
+    m.root.rotation.y = yaw + this.spin + Math.sin(this.time * 0.6) * 0.5 * this.spinSway;
     const cycle = this.time % 4;
     m.update(dt, { speed: 0, attackT: cycle > 3 && cycle < 3.6 ? (cycle - 3) / 0.6 : -1, dashing: false, downed: false, hurt: 0 });
 

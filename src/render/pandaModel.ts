@@ -140,8 +140,8 @@ export class PandaModel {
     }
 
     // Torso, with the classic black shoulder band.
-    blob(this.body, P.fur, 0, 0.62, 0, 0.42, 0.44, 0.4, true);
-    if (P.band !== P.fur) blob(this.body, P.band, 0, 0.62, 0, 0.425, 0.445, 0.405, false, G.band);
+    blob(this.body, P.fur, 0, 0.6, 0, 0.42, 0.43, 0.4, true);
+    if (P.band !== P.fur) blob(this.body, P.band, 0, 0.6, 0, 0.425, 0.435, 0.405, false, G.band);
 
     this.tail.position.set(0, 0.42, -0.36);
     this.body.add(this.tail);
@@ -155,12 +155,12 @@ export class PandaModel {
     }
 
     // Head.
-    this.head.position.set(0, 1.08, 0.04);
+    this.head.position.set(0, 1.13, 0.04);
     this.body.add(this.head);
     const H = this.head;
-    blob(H, P.fur, 0, 0, 0, 0.395, 0.34, 0.36, true);
+    blob(H, P.fur, 0, 0, 0, 0.375, 0.355, 0.36, true);
     for (const s of [1, -1]) {
-      blob(H, P.dark, 0.25 * s, 0.27, -0.04, 0.11, 0.11, 0.066, true);
+      blob(H, P.dark, 0.24 * s, 0.28, -0.04, 0.11, 0.11, 0.066, true);
       const patch = blob(H, P.patch, 0.135 * s, 0.03, 0.305, 0.078, 0.1, 0.045);
       patch.rotation.z = 0.45 * s;
 
@@ -172,7 +172,7 @@ export class PandaModel {
       blob(eye, 0xffffff, -0.012 * s, 0.015, 0.048, 0.012, 0.012, 0.008);
       this.eyes.push(eye);
 
-      blob(H, P.cheek, 0.225 * s, -0.08, 0.285, 0.055, 0.033, 0.02);
+      blob(H, P.cheek, 0.215 * s, -0.08, 0.285, 0.055, 0.033, 0.02);
     }
     blob(H, P.muzzle, 0, -0.09, 0.29, 0.16, 0.11, 0.105, true);
     blob(H, NOSE, 0, -0.045, 0.385, 0.06, 0.04, 0.035);
@@ -186,7 +186,7 @@ export class PandaModel {
       [this.armL, 1],
       [this.armR, -1],
     ] as const) {
-      arm.position.set(0.37 * side, 0.84, 0.03);
+      arm.position.set(0.37 * side, 0.79, 0.03);
       arm.rotation.order = 'YXZ';
       this.body.add(arm);
       const m = new THREE.Mesh(G.arm, toon(P.dark));
