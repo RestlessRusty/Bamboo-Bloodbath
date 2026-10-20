@@ -33,7 +33,6 @@ export class Lobby {
   private readonly busy: HTMLElement;
   private readonly room: HTMLElement;
   private readonly mapPicker: MapPicker;
-  private readonly installBtn: HTMLElement;
 
   constructor(
     parent: HTMLElement,
@@ -52,7 +51,6 @@ export class Lobby {
         </div>
         <p class="error" data-ref="error"></p>
         <button class="btn ghost" data-act="leave">Back</button>
-        <button class="btn primary" data-act="install" data-ref="install" style="display:none;">Install App</button>
       </div>
       <div class="card lobby-card" data-ref="busy" hidden>
         <h2 data-ref="busy-text">Connecting…</h2>
@@ -82,7 +80,6 @@ export class Lobby {
     this.ref('map').replaceWith(this.mapPicker.el);
 
     const code = this.ref<HTMLInputElement>('code');
-    this.installBtn = this.ref('install');
     code.addEventListener('input', () => {
       code.value = normalizeCode(code.value);
     });
@@ -109,34 +106,6 @@ export class Lobby {
         case 'bots':
           h.onBots(Number(t.dataset.v) || 0);
           break;
-        case 'install':
-          const deferred = (window as any).deferredPrompt;
-          if (deferred) {
-            deferred.prompt();
-            deferred.userChoice.then((choiceResult: any) => {
-              console.log('User response to the install prompt:', choiceResult.outcome);
-            });
-            (window as any).deferredPrompt = null;
-            this.installBtn.style.display = 'none';
-          }
-          break;
-
-      }
-    });
-    // Listen for beforeinstallprompt to enable the install button
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      e.preventDefault();
-      (window as any).deferredPrompt = e;
-      if (this.installBtn) {
-        this.installBtn.style.display = 'block';
-      }
-    });
-
-    window.addEventListener('appinstalled', () => {
-      console.log('PWA installed');
-      (window as any).deferredPrompt = null;
-      if (this.installBtn) {
-        this.installBtn.style.display = 'none';
       }
     });
   }

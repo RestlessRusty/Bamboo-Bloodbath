@@ -35,6 +35,8 @@ export interface Survivor {
   hurt: number;
   /** Rack we just swapped at; it won't swap again until we walk away. */
   lastRack: number;
+  crackers: number;
+  crackerCd: number;
   brain: BotBrain | null;
 }
 
@@ -59,7 +61,9 @@ export interface Zombie {
   sleeper: boolean;
   speedMul: number;
   target: Survivor | null;
-  /** Bridge or ford end to walk to first when water is in the way of the target. */
+  /** A crackling firecracker it's heading for instead of a survivor. */
+  lure: { x: number; z: number } | null;
+  /** Bridge or ford end to walk to first when water is in the way of the target (or lure). */
   via: { x: number; z: number } | null;
   retarget: number;
   biteCd: number;
@@ -85,6 +89,29 @@ export interface Javelin {
   yaw: number;
   pitch: number;
   flying: boolean;
+  age: number;
+}
+
+export interface Cracker {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  flying: boolean;
+  age: number;
+  /** Seconds of crackling left once landed. */
+  fuse: number;
+  popCd: number;
+}
+
+export interface CrackerDrop {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
   age: number;
 }
 

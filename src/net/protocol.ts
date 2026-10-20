@@ -4,7 +4,7 @@ import { PANDA_VARIANTS, WEAPON_TYPES, type PandaVariant, type PlayerInput, type
 import type { EncodedSnapshot } from './codec';
 
 /** Bump when messages change so old and new versions refuse to mix. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** Room code "K7QX" becomes PeerJS id "bamboo-bloodbath-v1-K7QX" for the host. */
 export const PEER_PREFIX = 'bamboo-bloodbath-v1-';
@@ -50,7 +50,7 @@ export type HostMsg =
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
 export function encodeInput(i: PlayerInput): number[] {
-  return [r2(i.mx), r2(i.mz), r2(i.ax), r2(i.az), (i.attack ? 1 : 0) | (i.dash ? 2 : 0)];
+  return [r2(i.mx), r2(i.mz), r2(i.ax), r2(i.az), (i.attack ? 1 : 0) | (i.dash ? 2 : 0) | (i.cracker ? 4 : 0)];
 }
 
 /** Defensive: never trust numbers coming over the wire. */
@@ -58,7 +58,15 @@ export function decodeInput(raw: unknown): PlayerInput {
   const a = Array.isArray(raw) ? raw : [];
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? clamp(v, -1, 1) : 0);
   const flags = typeof a[4] === 'number' ? a[4] : 0;
-  return { mx: num(a[0]), mz: num(a[1]), ax: num(a[2]), az: num(a[3]), attack: (flags & 1) !== 0, dash: (flags & 2) !== 0 };
+  return {
+    mx: num(a[0]),
+    mz: num(a[1]),
+    ax: num(a[2]),
+    az: num(a[3]),
+    attack: (flags & 1) !== 0,
+    dash: (flags & 2) !== 0,
+    cracker: (flags & 4) !== 0,
+  };
 }
 
 export function sanitizeName(raw: unknown): string {

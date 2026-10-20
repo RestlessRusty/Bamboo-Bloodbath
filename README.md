@@ -46,6 +46,15 @@ On the phone, open the URL and use the browser's *Add to Home screen* to install
 - **Zombie pandas** wander the valley and chase anyone within ~16 m. More appear the further you get.
   They bite, sometimes lunge, and **can't swim**: ponds and rivers are safe (but slow) spots.
   They cross rivers only on bridges and at shallow fords, where everyone wades slowly.
+- **Sleeping zombies** (curled up, snoring, *z z z*): most of the zombies already out on the map are
+  asleep. Noise wakes them: running, dashing, splashing, swinging (the axe is loud, the knife quiet),
+  javelins landing. **Walk slowly** (push the stick only halfway, tilt gently, or hold C) to sneak
+  past. Hitting a sleeper is a **sneak attack** that finishes it in one hit. A waking zombie groans,
+  which can wake its neighbours.
+- **Firecrackers** (orange button): you start with 2 and carry up to 3; killed zombies sometimes drop
+  more. A thrown firecracker crackles for 4 s and pulls every zombie within ~20 m to it (unless one is
+  already right next to you), then bangs and knocks over anything close. It wakes sleepers too, and
+  fizzles out in water.
 - **Ridges** (Snowy Pass) can't be climbed: go through the passes, where the arrow leads, or squeeze
   through a narrow shortcut. **Frozen ponds** are walkable but slippery for everyone.
 - **Bamboo thickets** hide you: zombies only notice you when they're very close (attacking reveals you).
@@ -71,15 +80,16 @@ the code, **Join**. The host can add bots to fill up to 4 pandas and presses **S
 
 ## Controls
 
-| Scheme | Move | Attack | Dash |
-|---|---|---|---|
-| Joystick (default) | Thumb on the left half | Red button | Blue button |
-| Tilt | Tilt the phone (Settings → Recalibrate) | Red button | Blue button |
-| Tap & swipe | Tap the ground / hold to steer | Swipe in a direction | Double-tap |
-| Keyboard | WASD / arrows | Space or J | Shift or K |
-| Gamepad | Left stick | A / X / RT | B / LT |
+| Scheme | Move (sneak) | Attack | Dash | Firecracker |
+|---|---|---|---|---|
+| Joystick (default) | Thumb on the left half (push halfway) | Red button | Blue button | Orange button |
+| Tilt | Tilt the phone (tilt gently) | Red button | Blue button | Orange button |
+| Tap & swipe | Tap the ground / hold to steer | Swipe in a direction | Double-tap | Orange button |
+| Keyboard | WASD / arrows (hold C or Q) | Space or J | Shift or K | E or L |
+| Gamepad | Left stick (push halfway) | A / X / RT | B / LT | Y / RB |
 
-Attacks auto-aim at the nearest zombie. Esc, P or the pause button opens the pause menu.
+Attacks auto-aim at the nearest zombie. Firecrackers fly ~9 m the way you're facing. Esc, P or the
+pause button opens the pause menu.
 
 ## Project structure
 
@@ -146,6 +156,7 @@ everyone, so bump `PROTOCOL_VERSION` in `src/net/protocol.ts` when you do.
    - ✅ B. River Crossing (river, bridges, ford)
    - ✅ C. Snowy Pass (winding route between cliffs)
    - ✅ D. Random Valley (new generated layout every match)
+8. ✅ Sleeping zombies (noise and sneaking) and firecrackers
 
 Ideas next: special zombie types, Android packaging (Capacitor or PWABuilder), host
 migration in multiplayer, client-side prediction for smoother guest movement.

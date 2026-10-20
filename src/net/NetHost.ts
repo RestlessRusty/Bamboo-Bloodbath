@@ -97,12 +97,12 @@ export class NetHost {
     this.broadcast({ t: 'start', specs, map });
   }
 
-  /** Latest input from a guest. A dash press is handed out only once; a guest gone quiet stands still. */
+  /** Latest input from a guest. Dash and firecracker presses are handed out only once; a guest gone quiet stands still. */
   inputFor(id: string): PlayerInput | undefined {
     const i = this.inputs.get(id);
     if (!i) return undefined;
     if (performance.now() - (this.inputAt.get(id) ?? 0) > INPUT_STALE_MS) return { ...NO_INPUT };
-    if (i.dash) this.inputs.set(id, { ...i, dash: false });
+    if (i.dash || i.cracker) this.inputs.set(id, { ...i, dash: false, cracker: false });
     return i;
   }
 
@@ -153,8 +153,10 @@ export class NetHost {
       this.onChange?.();
     } else if (msg.t === 'input' && r.id) {
       const input = decodeInput(msg.i);
-      // Keep an unconsumed dash press until the simulation has seen it.
-      if (this.inputs.get(r.id)?.dash) input.dash = true;
+      // Keep unconsumed dash / firecracker presses until the simulation has seen them.
+      const prev = this.inputs.get(r.id);
+      if (prev?.dash) input.dash = true;
+      if (prev?.cracker) input.cracker = true;
       this.inputs.set(r.id, input);
       this.inputAt.set(r.id, performance.now());
     }

@@ -1,4 +1,4 @@
-import { DOWNED, JAVELIN, SURVIVOR } from '../config';
+import { DOWNED, JAVELIN, NOISE, SURVIVOR } from '../config';
 import type { Route } from '../sim/route';
 import type { PlayerSpec, Snapshot, SurvivorSnap } from '../sim/types';
 import { el, formatTime } from './dom';
@@ -21,6 +21,8 @@ interface TeamRow {
 }
 
 const STATUS_ICON: Record<string, string> = { active: '', downed: '!', rescued: '✓', dead: '☠' };
+/** Show the sneaking hint when a sleeping zombie is this close. */
+const SLEEPER_HINT_RANGE = 10;
 
 export class Hud {
   private readonly el: HTMLDivElement;
@@ -32,6 +34,7 @@ export class Hud {
   private readonly hpFill: HTMLElement;
   private readonly hpText: HTMLElement;
   private readonly ammo: HTMLElement;
+  private readonly crackers: HTMLElement;
   private readonly team: HTMLElement;
   private readonly status: HTMLElement;
   private readonly revive: HTMLElement;
@@ -63,6 +66,7 @@ export class Hud {
         <div class="hud-me">
           <div class="hud-hp"><div class="hud-hp-fill" data-ref="hp"></div><span data-ref="hptext"></span></div>
           <div class="hud-ammo" data-ref="ammo"></div>
+          <div class="hud-ammo" data-ref="crackers"></div>
         </div>
       </div>
       <div class="hud-team" data-ref="team"></div>
@@ -110,6 +114,7 @@ export class Hud {
     this.hpFill = this.ref('hp');
     this.hpText = this.ref('hptext');
     this.ammo = this.ref('ammo');
+    this.crackers = this.ref('crackers');
     this.team = this.ref('team');
     this.status = this.ref('status');
     this.revive = this.ref('revive');
@@ -195,7 +200,7 @@ export class Hud {
     this.timer.classList.toggle('urgent', snap.timeLeft < 30);
 
     const me = snap.survivors.find((s) => s.id === this.localId);
-    this.updateMe(me);
+    this.updateMe(me, snap);
     this.updateTeam(snap);
     this.updateRevive(snap, me);
 
@@ -217,7 +222,7 @@ export class Hud {
     if (fps !== null) this.setText(this.fps, `${fps} fps`);
   }
 
-  private updateMe(me: SurvivorSnap | undefined): void {
+  private updateMe(me: SurvivorSnap | undefined, snap: Snapshot): void {
     if (!me) return;
     const hp = Math.max(0, me.hp) / SURVIVOR.maxHp;
     this.hpFill.style.width = `${hp * 100}%`;
@@ -227,12 +232,16 @@ export class Hud {
       this.ammo,
       me.weapon === 'javelin' ? `Javelins ${'●'.repeat(me.ammo)}${'○'.repeat(Math.max(0, JAVELIN.ammo - me.ammo))}` : '',
     );
+    this.setText(this.crackers, me.state === 'active' ? `Firecrackers ×${me.crackers}` : '');
 
     let status = '';
     if (me.state === 'downed') status = `You're down! ${Math.ceil(me.bleed)}s… a buddy can revive you`;
     else if (me.state === 'dead') status = 'You turned into a zombie… spectating';
     else if (me.state === 'rescued') status = 'You made it! Spectating…';
     else if (me.hidden) status = 'Hidden in the bamboo';
+    else if (snap.zombies.some((z) => z.state === 'sleep' && Math.hypot(z.x - me.x, z.z - me.z) < SLEEPER_HINT_RANGE)) {
+      status = me.speed > SURVIVOR.speed * NOISE.sneakFrac ? 'Shh! Walk slowly past sleeping zombies' : 'Sneaking…';
+    }
     this.setText(this.status, status);
     this.status.classList.toggle('small', me.state === 'active');
 

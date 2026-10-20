@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { lerp } from '../core/math';
 import type { GameMap } from '../sim/gameMap';
-import type { JavelinSnap, Snapshot, WeaponType } from '../sim/types';
+import type { CrackerDropSnap, CrackerSnap, JavelinSnap, Snapshot, WeaponType } from '../sim/types';
 import { addOutline, toon } from './toon';
 import { buildWeapon } from './weaponModels';
 
@@ -10,17 +10,34 @@ interface RackView {
   weapon: WeaponType | null;
 }
 
-/** Bamboo snacks, weapon racks and javelins lying around or flying. */
+/** Firecracker bundle parts, shared by every firecracker on this map (freed with the map). */
+interface CrackerGeos {
+  stick: THREE.BufferGeometry;
+  band: THREE.BufferGeometry;
+  fuse: THREE.BufferGeometry;
+}
+
+/** Bamboo snacks, weapon racks, javelins and firecrackers lying around or flying. */
 export class PickupsView {
   readonly group = new THREE.Group();
   private readonly snacks: THREE.Group[] = [];
   private readonly racks: RackView[] = [];
   private readonly javelins = new Map<number, THREE.Group>();
+  private readonly thrown = new Map<number, THREE.Group>();
+  private readonly drops = new Map<number, THREE.Group>();
   private readonly glowMat = new THREE.MeshBasicMaterial({ color: 0x9cff7a, transparent: true, opacity: 0.5, depthWrite: false });
   private readonly rackGlowMat = new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.5, depthWrite: false });
+  private readonly dropGlowMat = new THREE.MeshBasicMaterial({ color: 0xff8a2a, transparent: true, opacity: 0.5, depthWrite: false });
+  private readonly ring: THREE.BufferGeometry;
+  private readonly crackerGeos: CrackerGeos = {
+    stick: new THREE.CylinderGeometry(0.06, 0.06, 0.3, 8),
+    band: new THREE.CylinderGeometry(0.064, 0.064, 0.06, 8),
+    fuse: new THREE.CylinderGeometry(0.012, 0.012, 0.14, 4),
+  };
 
   constructor(map: GameMap) {
     const ring = new THREE.RingGeometry(0.45, 0.62, 24).rotateX(-Math.PI / 2);
+    this.ring = ring;
 
     for (const spot of map.props.bambooSpots) {
       const g = new THREE.Group();
@@ -96,7 +113,97 @@ export class PickupsView {
       this.group.remove(view);
       this.javelins.delete(id);
     }
+
+    this.updateThrown(time, prev.crackers, curr.crackers, alpha);
+    this.updateDrops(time, curr.crackerDrops);
   }
+
+  /** Firecrackers in the air (tumbling) or crackling on the ground (jittering). */
+  private updateThrown(time: number, prev: readonly CrackerSnap[], curr: readonly CrackerSnap[], alpha: number): void {
+    const seen = new Set<number>();
+    for (const c of curr) {
+      seen.add(c.id);
+      let view = this.thrown.get(c.id);
+      if (!view) {
+        view = buildCracker(this.crackerGeos);
+        this.thrown.set(c.id, view);
+        this.group.add(view);
+      }
+      const p = prev.find((o) => o.id === c.id);
+      const a = p && p.flying === c.flying ? alpha : 1;
+      const from = p ?? c;
+      view.position.set(lerp(from.x, c.x, a), lerp(from.y, c.y, a), lerp(from.z, c.z, a));
+      if (c.flying) {
+        view.rotation.set(time * 9 + c.id, 0, time * 7);
+      } else {
+        // Lying on its side, hopping about as it pops.
+        view.position.y += Math.abs(Math.sin(time * 37 + c.id)) * 0.05;
+        view.rotation.set(Math.sin(time * 29) * 0.15, c.id, Math.PI / 2 - 0.15 + Math.sin(time * 23) * 0.2);
+      }
+    }
+    for (const [id, view] of this.thrown) {
+      if (seen.has(id)) continue;
+      this.group.remove(view);
+      this.thrown.delete(id);
+    }
+  }
+
+  /** Firecrackers dropped by zombies: bobbing, with an orange glow, like the bamboo snacks. */
+  private updateDrops(time: number, curr: readonly CrackerDropSnap[]): void {
+    const seen = new Set<number>();
+    for (const d of curr) {
+      seen.add(d.id);
+      let view = this.drops.get(d.id);
+      if (!view) {
+        view = new THREE.Group();
+        const glow = new THREE.Mesh(this.ring, this.dropGlowMat);
+        glow.position.y = 0.05;
+        view.add(glow);
+        const bundle = buildCracker(this.crackerGeos);
+        bundle.name = 'bundle';
+        view.add(bundle);
+        this.drops.set(d.id, view);
+        this.group.add(view);
+      }
+      view.position.set(d.x, d.y, d.z);
+      const bundle = view.getObjectByName('bundle');
+      if (bundle) {
+        bundle.position.y = 0.3 + Math.sin(time * 2.6 + d.id) * 0.08;
+        bundle.rotation.y = time * 1.4 + d.id;
+      }
+    }
+    this.dropGlowMat.opacity = 0.35 + 0.2 * Math.sin(time * 3.4);
+    for (const [id, view] of this.drops) {
+      if (seen.has(id)) continue;
+      this.group.remove(view);
+      this.drops.delete(id);
+    }
+  }
+}
+
+/** Three red sticks with gold bands and a fuse, standing upright (y from 0 to ~0.4). */
+function buildCracker(geos: CrackerGeos): THREE.Group {
+  const g = new THREE.Group();
+  const offsets: readonly [number, number][] = [
+    [-0.065, -0.035],
+    [0.065, -0.035],
+    [0, 0.07],
+  ];
+  for (const [x, z] of offsets) {
+    const stick = new THREE.Mesh(geos.stick, toon(0xd8312b));
+    stick.position.set(x, 0.15, z);
+    stick.castShadow = true;
+    g.add(stick);
+    addOutline(stick, 1.14);
+    const band = new THREE.Mesh(geos.band, toon(0xffd34d));
+    band.position.set(x, 0.15, z);
+    g.add(band);
+  }
+  const fuse = new THREE.Mesh(geos.fuse, toon(0x3b2a20));
+  fuse.position.set(0.02, 0.36, 0.02);
+  fuse.rotation.z = -0.4;
+  g.add(fuse);
+  return g;
 }
 
 function buildSnack(): THREE.Group {

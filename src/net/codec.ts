@@ -1,5 +1,7 @@
 import {
   WEAPON_TYPES,
+  type CrackerDropSnap,
+  type CrackerSnap,
   type GameEvent,
   type JavelinSnap,
   type MatchPhase,
@@ -22,6 +24,10 @@ export interface EncodedSnapshot {
   s: (string | number)[][];
   z: (string | number)[][];
   j: number[][];
+  /** Thrown firecrackers: [id, x, y, z, flying]. */
+  c: number[][];
+  /** Firecrackers lying around: [id, x, y, z]. */
+  d: number[][];
   /** Bamboo snacks as "1"/"0" per spot (any number of spots). */
   b: string;
   rk: number[];
@@ -30,7 +36,7 @@ export interface EncodedSnapshot {
 
 const PHASES: readonly MatchPhase[] = ['playing', 'won', 'lost'];
 const SURVIVOR_STATES: readonly SurvivorState[] = ['active', 'downed', 'rescued', 'dead'];
-const ZOMBIE_STATES: readonly ZombieState[] = ['walk', 'bite', 'lunge', 'stun', 'dying'];
+const ZOMBIE_STATES: readonly ZombieState[] = ['walk', 'bite', 'lunge', 'stun', 'dying', 'sleep', 'wake'];
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
@@ -61,6 +67,7 @@ export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
       r2(v.revive),
       r2(v.hurt),
       v.kills,
+      v.crackers,
     ]),
     z: s.zombies.map((v) => [
       v.id,
@@ -76,6 +83,8 @@ export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
       v.from ?? '',
     ]),
     j: s.javelins.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z), r2(v.yaw), r2(v.pitch), v.flying ? 1 : 0]),
+    c: s.crackers.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z), v.flying ? 1 : 0]),
+    d: s.crackerDrops.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z)]),
     b: bamboo,
     rk: s.racks.map((w) => WEAPON_TYPES.indexOf(w)),
     e: s.events,
@@ -102,6 +111,7 @@ export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
     revive: n(a[13]),
     hurt: n(a[14]),
     kills: n(a[15]),
+    crackers: n(a[16]),
   }));
   const zombies: ZombieSnap[] = (e.z ?? []).map((a) => ({
     id: n(a[0]),
@@ -125,6 +135,8 @@ export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
     pitch: n(a[5]),
     flying: a[6] === 1,
   }));
+  const crackers: CrackerSnap[] = (e.c ?? []).map((a) => ({ id: n(a[0]), x: n(a[1]), y: n(a[2]), z: n(a[3]), flying: a[4] === 1 }));
+  const crackerDrops: CrackerDropSnap[] = (e.d ?? []).map((a) => ({ id: n(a[0]), x: n(a[1]), y: n(a[2]), z: n(a[3]) }));
   const bamboo = Array.from(str(e.b), (c) => c === '1');
   return {
     tick: n(e.k),
@@ -134,6 +146,8 @@ export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
     survivors,
     zombies,
     javelins,
+    crackers,
+    crackerDrops,
     bamboo,
     racks: (e.rk ?? []).map((w) => WEAPON_TYPES[w] ?? 'knife'),
     events: Array.isArray(e.e) ? e.e : [],

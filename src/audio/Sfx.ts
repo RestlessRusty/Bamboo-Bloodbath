@@ -18,6 +18,11 @@ export type SfxName =
   | 'rescued'
   | 'splash'
   | 'thud'
+  | 'snore'
+  | 'wake'
+  | 'toss'
+  | 'pop'
+  | 'bang'
   | 'win'
   | 'lose';
 
@@ -180,6 +185,29 @@ export class Sfx {
         this.tone('sine', 220, 90, 0.1, 0.4, out);
         this.sweep('lowpass', 900, 300, 1, 0.06, 0.3, out);
         break;
+      case 'snore':
+        // Breathe in (rising rasp), then a low rumbling breath out.
+        this.sweep('lowpass', 300, 900, 4, 0.7, 0.35, out);
+        this.groan(r(48, 60), 0.8, 0.22, out, 0.75);
+        break;
+      case 'wake':
+        // A startled, rising "huh?!"
+        this.groan(r(90, 120), 0.45, 0.4, out);
+        this.tone('sawtooth', 160, 320, 0.25, 0.08, out, 0.1);
+        break;
+      case 'toss':
+        this.sweep('bandpass', 700, 1800, 2, 0.22, 0.35, out);
+        this.sweep('highpass', 3000, 6000, 1, 0.4, 0.12, out, 0.05);
+        break;
+      case 'pop':
+        this.sweep('highpass', r(1800, 2600), 900, 0.8, 0.05, 0.9, out);
+        this.tone('square', r(700, 1100), 200, 0.04, 0.12, out);
+        break;
+      case 'bang':
+        this.tone('sine', 120, 35, 0.5, 0.9, out);
+        this.sweep('lowpass', 3000, 200, 0.7, 0.6, 0.9, out);
+        this.sweep('highpass', 4000, 1500, 0.8, 0.15, 0.6, out);
+        break;
       case 'win':
         [523, 659, 784, 1046, 784, 1046].forEach((f, i) => this.tone('triangle', f, f, i === 5 ? 0.6 : 0.16, 0.3, out, i * 0.13));
         break;
@@ -216,6 +244,7 @@ export class Sfx {
     const t = ctx.currentTime + delay;
     const src = ctx.createBufferSource();
     src.buffer = this.noise;
+    src.loop = true; // long sweeps from a random offset would otherwise run off the 1 s buffer
     const filter = ctx.createBiquadFilter();
     filter.type = type;
     filter.Q.value = q;
@@ -230,9 +259,9 @@ export class Sfx {
     src.stop(t + dur + 0.05);
   }
 
-  private groan(freq: number, dur: number, vol: number, out: AudioNode): void {
+  private groan(freq: number, dur: number, vol: number, out: AudioNode, delay = 0): void {
     const ctx = this.ctx!;
-    const t = ctx.currentTime;
+    const t = ctx.currentTime + delay;
     const osc = ctx.createOscillator();
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(freq * 1.15, t);

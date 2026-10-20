@@ -87,6 +87,7 @@ export class LocalGame implements Session {
 
     renderer.updateGame(frozen ? 0 : dt, this.prev, this.curr, frozen ? 1 : this.acc / SIM_DT, this.localId);
     hud.update(this.curr, fps);
+    input.setCrackerCount(this.curr.survivors.find((s) => s.id === this.localId)?.crackers ?? 0);
   }
 
   dispose(): void {

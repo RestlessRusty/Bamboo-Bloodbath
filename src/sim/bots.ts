@@ -1,5 +1,5 @@
-import { JAVELIN } from '../config';
-import type { BambooSpot, Javelin, Survivor, Zombie } from './entities';
+import { CRACKER, JAVELIN, NOISE } from '../config';
+import type { BambooSpot, Cracker, CrackerDrop, Javelin, Survivor, Zombie } from './entities';
 import type { GameMap } from './gameMap';
 import type { PlayerInput } from './types';
 
@@ -9,6 +9,8 @@ export interface BotWorld {
   readonly survivors: readonly Survivor[];
   readonly zombies: readonly Zombie[];
   readonly javelins: readonly Javelin[];
+  readonly crackers: readonly Cracker[];
+  readonly crackerDrops: readonly CrackerDrop[];
   readonly bamboo: readonly BambooSpot[];
   steer(x: number, z: number, dx: number, dz: number, avoidWater: boolean): { x: number; z: number };
   detour(x: number, z: number, tx: number, tz: number): { x: number; z: number; cost: number; wall: boolean } | null;
@@ -36,9 +38,14 @@ function nearest<T extends { x: number; z: number }>(items: readonly T[], from: 
   return best;
 }
 
+/** A pack at least this big within PACK_RANGE makes a bot throw a firecracker. */
+const PACK_SIZE = 4;
+const PACK_RANGE = 7;
+
 /**
  * A simple buddy AI that produces the same PlayerInput a human would.
- * Priorities: revive downed friends > flee when nearly dead > eat > pick up javelins > fight > follow the leader.
+ * Priorities: revive downed friends > flee when nearly dead > eat > pick up javelins and firecrackers
+ * > fight > follow the leader. Sleeping zombies are left alone (and tiptoed past).
  */
 export class BotBrain {
   private checkT = 0;
@@ -51,13 +58,26 @@ export class BotBrain {
   constructor(private readonly slot: number) {}
 
   think(me: Survivor, w: BotWorld, dt: number): PlayerInput {
-    const out: PlayerInput = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false };
+    const out: PlayerInput = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false };
 
     let threat: Zombie | null = null;
     let td = Infinity;
+    let sleeperNear = false;
+    let packN = 0;
+    let packX = 0;
+    let packZ = 0;
     for (const z of w.zombies) {
       if (z.state === 'dying') continue;
       const d = Math.hypot(z.x - me.x, z.z - me.z);
+      if (z.state === 'sleep') {
+        if (d < 9) sleeperNear = true;
+        continue;
+      }
+      if (d < PACK_RANGE && z.state !== 'stun') {
+        packN++;
+        packX += z.x;
+        packZ += z.z;
+      }
       if (d < td) {
         td = d;
         threat = z;
@@ -66,7 +86,16 @@ export class BotBrain {
 
     const canThrow = me.weapon === 'javelin' && me.ammo > 0;
     const reach = canThrow ? 11 : me.weapon === 'axe' ? 2.2 : me.weapon === 'knife' ? 1.8 : 1.4;
-    if (threat && td < reach) {
+    // Swarmed and nothing crackling nearby yet: throw a firecracker away from the pack.
+    const crackling = w.crackers.some((c) => Math.hypot(c.x - me.x, c.z - me.z) < 15);
+    if (packN >= PACK_SIZE && me.crackers > 0 && me.crackerCd === 0 && !crackling) {
+      const ax = me.x - packX / packN;
+      const az = me.z - packZ / packN;
+      const al = Math.hypot(ax, az) || 1;
+      out.cracker = true;
+      out.ax = ax / al;
+      out.az = az / al;
+    } else if (threat && td < reach) {
       out.attack = true;
       out.ax = (threat.x - me.x) / td;
       out.az = (threat.z - me.z) / td;
@@ -84,6 +113,7 @@ export class BotBrain {
     const downed = nearest(w.survivors.filter((s) => s !== me && s.state === 'downed'), me, 30);
     const snack = me.hp < 55 ? nearest(w.bamboo.filter((b) => b.active), me, 20) : null;
     const spear = me.weapon === 'javelin' && me.ammo < JAVELIN.ammo ? nearest(w.javelins.filter((j) => !j.flying), me, 14) : null;
+    const loot = me.crackers < CRACKER.max ? nearest(w.crackerDrops, me, 10) : null;
     const leader = nearest(w.survivors.filter((s) => !s.spec.bot && s.state === 'active'), me, Infinity);
 
     if (downed && (!threat || td > 2.5)) {
@@ -95,6 +125,8 @@ export class BotBrain {
       goTo(snack.x, snack.z, 0.3);
     } else if (spear && (!threat || td > 4)) {
       goTo(spear.x, spear.z, 0.3);
+    } else if (loot && (!threat || td > 4)) {
+      goTo(loot.x, loot.z, 0.3);
     } else if (threat && td < 4 && !canThrow) {
       goTo(threat.x, threat.z, 0.9);
     } else if (threat && canThrow && td < 3) {
@@ -138,7 +170,9 @@ export class BotBrain {
           const l = Math.hypot(x, z) || 1;
           dir = { x: x / l, z: z / l };
         }
-        const sp = Math.min(1, d / 1.5 + 0.3);
+        let sp = Math.min(1, d / 1.5 + 0.3);
+        // Tiptoe past sleepers unless something awake is already close.
+        if (sleeperNear && td > 6) sp = Math.min(sp, NOISE.sneakFrac * 0.9);
         out.mx = dir.x * sp;
         out.mz = dir.z * sp;
       }

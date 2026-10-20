@@ -23,13 +23,15 @@ export interface PlayerInput {
   az: number;
   attack: boolean;
   dash: boolean;
+  /** Throw a firecracker (one-shot, like dash). Uses the aim if given, else the facing. */
+  cracker: boolean;
 }
 
-export const NO_INPUT: Readonly<PlayerInput> = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false };
+export const NO_INPUT: Readonly<PlayerInput> = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false };
 
 export type SurvivorState = 'active' | 'downed' | 'rescued' | 'dead';
 export type MatchPhase = 'playing' | 'won' | 'lost';
-export type ZombieState = 'walk' | 'bite' | 'lunge' | 'stun' | 'dying';
+export type ZombieState = 'walk' | 'bite' | 'lunge' | 'stun' | 'dying' | 'sleep' | 'wake';
 
 export interface SurvivorSnap {
   id: string;
@@ -56,6 +58,8 @@ export interface SurvivorSnap {
   /** Damage flash 0..1. */
   hurt: number;
   kills: number;
+  /** Firecrackers carried. */
+  crackers: number;
 }
 
 export interface ZombieSnap {
@@ -66,7 +70,7 @@ export interface ZombieSnap {
   rot: number;
   speed: number;
   state: ZombieState;
-  /** Progress 0..1 through the current bite / lunge / death. */
+  /** Progress 0..1 through the current bite / lunge / death / getting up. */
   t: number;
   /** Cosmetic tint index. */
   look: number;
@@ -85,6 +89,23 @@ export interface JavelinSnap {
   flying: boolean;
 }
 
+/** A thrown firecracker: in the air, or crackling on the ground. */
+export interface CrackerSnap {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  flying: boolean;
+}
+
+/** A firecracker lying on the ground to be picked up. */
+export interface CrackerDropSnap {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+}
+
 export type GameEvent =
   | { e: 'swing'; id: string; w: WeaponType }
   | { e: 'throw'; id: string }
@@ -100,7 +121,13 @@ export type GameEvent =
   | { e: 'swap'; id: string; w: WeaponType }
   | { e: 'grab'; id: string }
   | { e: 'splash'; x: number; z: number }
-  | { e: 'thud'; x: number; y: number; z: number };
+  | { e: 'thud'; x: number; y: number; z: number }
+  | { e: 'snore'; x: number; z: number }
+  | { e: 'wake'; x: number; z: number }
+  | { e: 'toss'; id: string }
+  | { e: 'pop'; x: number; y: number; z: number }
+  | { e: 'bang'; x: number; y: number; z: number }
+  | { e: 'loot'; id: string };
 
 /** Everything a client needs to draw one simulation tick. */
 export interface Snapshot {
@@ -111,6 +138,8 @@ export interface Snapshot {
   survivors: SurvivorSnap[];
   zombies: ZombieSnap[];
   javelins: JavelinSnap[];
+  crackers: CrackerSnap[];
+  crackerDrops: CrackerDropSnap[];
   /** Which bamboo snack spots currently have food (same order as MapProps.bambooSpots). */
   bamboo: boolean[];
   /** Weapon currently on each rack (same order as MapProps.racks). */

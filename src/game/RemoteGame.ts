@@ -23,7 +23,7 @@ export class RemoteGame implements Session {
   private renderTick = -1;
   private ended = false;
   private sendTimer = 0;
-  private pending: PlayerInput = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false };
+  private pending: PlayerInput = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false };
 
   constructor(
     private readonly ctx: GameContext,
@@ -80,6 +80,7 @@ export class RemoteGame implements Session {
 
     renderer.updateGame(this.ended ? 0 : dt, a, b, alpha, this.localId);
     hud.update(latest, fps);
+    this.ctx.input.setCrackerCount(latest.survivors.find((s) => s.id === this.localId)?.crackers ?? 0);
   }
 
   dispose(): void {
@@ -98,11 +99,12 @@ export class RemoteGame implements Session {
     }
     p.attack ||= i.attack;
     p.dash ||= i.dash;
+    p.cracker ||= i.cracker;
 
     this.sendTimer += dt;
     if (this.sendTimer < INPUT_SEND_INTERVAL) return;
     this.sendTimer = 0;
     this.link.sendInput(p);
-    this.pending = { mx: p.mx, mz: p.mz, ax: 0, az: 0, attack: false, dash: false };
+    this.pending = { mx: p.mx, mz: p.mz, ax: 0, az: 0, attack: false, dash: false, cracker: false };
   }
 }

@@ -17,10 +17,15 @@ const TAP_MAX_PX = 20;
 const DOUBLE_TAP_MS = 320;
 const TILT_DEADZONE_DEG = 2.5;
 const TILT_FULL_DEG = 16;
+/** Holding the keyboard sneak key walks at this fraction of full speed (quiet enough for sleepers). */
+const SNEAK_KEY_SPEED = 0.45;
 
 const ATTACK_ICON =
   '<svg viewBox="0 0 24 24"><path d="M14.5 3.5l6 6-9.5 9.5-6-6z"/><path d="M5 13l6 6M3 21l3.5-3.5"/></svg>';
 const DASH_ICON = '<svg viewBox="0 0 24 24"><path d="M3 8h9M2 12h10M3 16h9M14 6l6 6-6 6"/></svg>';
+const CRACKER_ICON =
+  '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="5" height="11" rx="1"/><rect x="11" y="8" width="5" height="13" rx="1"/>' +
+  '<path d="M13.5 8c0-2 1-3.5 3-4M18 2.5l1 1.5M20.5 5l-1.5.5M19 1l-.3 1.2"/></svg>';
 
 interface TapPointer {
   id: number;
@@ -57,6 +62,9 @@ export class InputManager {
   private readonly layer: HTMLDivElement;
   private readonly joyBase: HTMLDivElement;
   private readonly joyKnob: HTMLDivElement;
+  private readonly crackerBtn: HTMLButtonElement;
+  private readonly crackerCount: HTMLSpanElement;
+  private crackersShown = -1;
 
   private joyId: number | null = null;
   private joyOX = 0;
@@ -67,11 +75,13 @@ export class InputManager {
   private attackHeld = false;
   private attackPulse = false;
   private dashPulse = false;
+  private crackerPulse = false;
   private aimX = 0;
   private aimZ = 0;
 
   private readonly keys = new Set<string>();
   private padDashHeld = false;
+  private padCrackerHeld = false;
   private padPauseHeld = false;
 
   private beta: number | null = null;
@@ -95,9 +105,13 @@ export class InputManager {
     this.joyBase.appendChild(this.joyKnob);
     const attack = el('button', 'act-btn attack', ATTACK_ICON);
     const dash = el('button', 'act-btn dash', DASH_ICON);
+    this.crackerBtn = el('button', 'act-btn cracker', CRACKER_ICON);
+    this.crackerCount = el('span', 'act-count');
+    this.crackerBtn.appendChild(this.crackerCount);
     attack.setAttribute('aria-label', 'Attack');
     dash.setAttribute('aria-label', 'Dash');
-    this.layer.append(this.joyBase, attack, dash);
+    this.crackerBtn.setAttribute('aria-label', 'Throw firecracker');
+    this.layer.append(this.joyBase, attack, dash, this.crackerBtn);
     parent.appendChild(this.layer);
 
     this.layer.addEventListener('pointerdown', this.onDown);
@@ -112,6 +126,9 @@ export class InputManager {
     });
     this.bindButton(dash, (down) => {
       if (down) this.dashPulse = true;
+    });
+    this.bindButton(this.crackerBtn, (down) => {
+      if (down) this.crackerPulse = true;
     });
 
     window.addEventListener('keydown', this.onKeyDown);
@@ -139,6 +156,14 @@ export class InputManager {
     if (on && this.scheme === 'tilt') this.needsCalibration = true;
   }
 
+  /** Firecrackers carried, shown on the button. */
+  setCrackerCount(n: number): void {
+    if (n === this.crackersShown) return;
+    this.crackersShown = n;
+    this.crackerCount.textContent = String(n);
+    this.crackerBtn.classList.toggle('empty', n <= 0);
+  }
+
   calibrateTilt(): void {
     if (this.beta === null || this.gamma === null) {
       this.needsCalibration = true;
@@ -157,18 +182,28 @@ export class InputManager {
     let mz = 0;
     let attack = this.attackHeld || this.attackPulse;
     let dash = this.dashPulse;
+    let cracker = this.crackerPulse;
     const ax = this.aimX;
     const az = this.aimZ;
     this.attackPulse = false;
     this.dashPulse = false;
+    this.crackerPulse = false;
     this.aimX = 0;
     this.aimZ = 0;
 
     const k = this.keys;
-    if (k.has('KeyA') || k.has('ArrowLeft')) mx -= 1;
-    if (k.has('KeyD') || k.has('ArrowRight')) mx += 1;
-    if (k.has('KeyW') || k.has('ArrowUp')) mz -= 1;
-    if (k.has('KeyS') || k.has('ArrowDown')) mz += 1;
+    let kx = 0;
+    let kz = 0;
+    if (k.has('KeyA') || k.has('ArrowLeft')) kx -= 1;
+    if (k.has('KeyD') || k.has('ArrowRight')) kx += 1;
+    if (k.has('KeyW') || k.has('ArrowUp')) kz -= 1;
+    if (k.has('KeyS') || k.has('ArrowDown')) kz += 1;
+    const kl = Math.hypot(kx, kz);
+    if (kl > 0) {
+      const sneak = k.has('KeyC') || k.has('KeyQ') ? SNEAK_KEY_SPEED : 1;
+      mx += (kx / kl) * sneak;
+      mz += (kz / kl) * sneak;
+    }
     if (k.has('Space') || k.has('KeyJ')) attack = true;
 
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -185,6 +220,9 @@ export class InputManager {
       const dashBtn = pressed(1) || pressed(6);
       if (dashBtn && !this.padDashHeld) dash = true;
       this.padDashHeld = dashBtn;
+      const crackerBtn = pressed(3) || pressed(5);
+      if (crackerBtn && !this.padCrackerHeld) cracker = true;
+      this.padCrackerHeld = crackerBtn;
       const pauseBtn = pressed(9);
       if (pauseBtn && !this.padPauseHeld) this.hooks.onPause();
       this.padPauseHeld = pauseBtn;
@@ -226,7 +264,7 @@ export class InputManager {
       mx /= len;
       mz /= len;
     }
-    return { mx, mz, ax, az, attack, dash };
+    return { mx, mz, ax, az, attack, dash, cracker };
   }
 
   private resetState(): void {
@@ -240,6 +278,7 @@ export class InputManager {
     this.attackHeld = false;
     this.attackPulse = false;
     this.dashPulse = false;
+    this.crackerPulse = false;
     this.aimX = 0;
     this.aimZ = 0;
     this.tap = null;
@@ -348,6 +387,7 @@ export class InputManager {
     this.keys.add(e.code);
     if (!e.repeat && (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyK')) this.dashPulse = true;
     if (!e.repeat && (e.code === 'Space' || e.code === 'KeyJ')) this.attackPulse = true;
+    if (!e.repeat && (e.code === 'KeyE' || e.code === 'KeyL')) this.crackerPulse = true;
     if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
   };
 

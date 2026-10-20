@@ -67,6 +67,65 @@ export const ZOMBIE = {
   despawnRadius: 55,
 };
 
+/** Most of the starting horde is asleep until something noisy happens nearby. */
+export const SLEEP = {
+  /** Share of the zombies placed at match start that are asleep. */
+  share: 0.6,
+  /** Seconds to get up once woken (a window to sneak away or strike first). */
+  wakeTime: 0.9,
+  /** Damage multiplier against a sleeping zombie: any weapon finishes it in one hit. */
+  sneakAttackMul: 2.5,
+  /** Snores are only sent when a survivor is this close. */
+  snoreRange: 14,
+  snoreMin: 2.5,
+  snoreMax: 5,
+};
+
+/** How far (m) each action wakes sleeping zombies. */
+export const NOISE = {
+  /** Footsteps when walking slowly (less than knife reach, so you can sneak up for a stab)… */
+  sneak: 0.9,
+  /** …growing to this at full speed. */
+  run: 7,
+  /** Moving slower than this fraction of full speed counts as sneaking. */
+  sneakFrac: 0.55,
+  /** Footsteps inside a bamboo thicket are muffled by this factor. */
+  thicketMul: 0.6,
+  dash: 7,
+  splash: 9,
+  /** Melee swings, by weapon (javelin = the empty-handed slap). */
+  swing: { knife: 2.5, axe: 6, javelin: 3 },
+  /** A javelin landing or hitting something. */
+  thud: 5,
+  /** A zombie getting up groans, which can rouse its neighbours. */
+  groan: 5,
+};
+
+export const CRACKER = {
+  /** Firecrackers each survivor starts with, and the most you can carry. */
+  start: 2,
+  max: 3,
+  /** Chance that a killed zombie drops one. */
+  dropChance: 0.12,
+  /** Most dropped firecrackers lying around at once (oldest go first). */
+  maxDrops: 10,
+  dropLife: 60,
+  pickupRadius: 1.1,
+  cooldown: 0.6,
+  speed: 9,
+  lift: 6.5,
+  gravity: 15,
+  /** Seconds the string crackles after landing, pulling zombies in, before the final bang. */
+  popTime: 4,
+  /** Zombies this close come to it (and sleepers wake). */
+  lure: 20,
+  /** …unless they're already this close to a survivor. */
+  ignoreNear: 2.2,
+  bangRadius: 2.6,
+  bangStun: 1.2,
+  bangKnockback: 6,
+};
+
 export const DOWNED = {
   bleedTime: 10,
   /** Bleed-out time when nobody is left who could revive you. */

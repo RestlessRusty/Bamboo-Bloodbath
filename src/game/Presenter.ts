@@ -114,6 +114,30 @@ export class Presenter {
           sfx.play('thud', ev, 0.6);
           renderer.effects.dust(ev.x, ev.y, ev.z);
           break;
+        case 'snore':
+          sfx.play('snore', ev, 0.6);
+          break;
+        case 'wake':
+          sfx.play('wake', ev, 0.8);
+          break;
+        case 'toss':
+          sfx.play('toss', posOf(ev.id), 0.8);
+          break;
+        case 'pop':
+          sfx.play('pop', ev, 0.55);
+          renderer.effects.pop(ev.x, ev.y, ev.z);
+          break;
+        case 'bang': {
+          sfx.play('bang', ev);
+          renderer.effects.bang(ev.x, ev.y, ev.z);
+          const d = Math.hypot(ev.x - listener.x, ev.z - listener.z);
+          if (d < 12) renderer.shake(0.5 * (1 - d / 12));
+          break;
+        }
+        case 'loot':
+          sfx.play('pickup', posOf(ev.id), 0.7);
+          if (mine(ev.id)) hud.flash('Picked up a firecracker!', 1500);
+          break;
       }
     }
   }

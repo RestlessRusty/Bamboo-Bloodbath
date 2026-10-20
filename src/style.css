@@ -444,8 +444,34 @@ small {
   height: 66px;
   background: var(--blue);
 }
+.act-btn.cracker {
+  right: calc(42px + var(--safe-r));
+  bottom: calc(142px + var(--safe-b));
+  width: 62px;
+  height: 62px;
+  background: #ff8a2a;
+}
+.act-btn.cracker.empty {
+  opacity: 0.45;
+}
+.act-count {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 4px;
+  border-radius: 12px;
+  border: 3px solid var(--ink);
+  background: #fff;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
 .touch-layer:not([data-scheme='joystick']) .joy-base,
-.touch-layer[data-scheme='tap'] .act-btn {
+.touch-layer[data-scheme='tap'] .act-btn:not(.cracker) {
   display: none;
 }
 

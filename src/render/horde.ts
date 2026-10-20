@@ -118,6 +118,58 @@ interface Anim {
   seen: number;
 }
 
+/** A cartoon letter on a sprite ("z" for snoring, "!" for waking up). Made once, never disposed. */
+function glyphMaterial(text: string, color: string): THREE.SpriteMaterial {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const g = canvas.getContext('2d')!;
+  g.font = '700 52px Fredoka, "Trebuchet MS", sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.lineJoin = 'round';
+  g.lineWidth = 9;
+  g.strokeStyle = '#2b1e1a';
+  g.strokeText(text, 32, 34);
+  g.fillStyle = color;
+  g.fillText(text, 32, 34);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, fog: false });
+}
+
+/** A fixed pool of sprites sharing one material, re-placed every frame. */
+class GlyphPool {
+  private readonly sprites: THREE.Sprite[] = [];
+  private used = 0;
+
+  constructor(group: THREE.Group, material: THREE.SpriteMaterial, size: number) {
+    for (let i = 0; i < size; i++) {
+      const s = new THREE.Sprite(material);
+      s.visible = false;
+      s.renderOrder = 9;
+      group.add(s);
+      this.sprites.push(s);
+    }
+  }
+
+  begin(): void {
+    this.used = 0;
+  }
+
+  place(x: number, y: number, z: number, scale: number): void {
+    if (this.used >= this.sprites.length || scale <= 0.01) return;
+    const s = this.sprites[this.used++];
+    s.position.set(x, y, z);
+    s.scale.setScalar(scale);
+    s.visible = true;
+  }
+
+  end(): void {
+    for (let i = this.used; i < this.sprites.length; i++) this.sprites[i].visible = false;
+  }
+}
+
 /**
  * All zombies drawn with 8 instanced meshes (4 parts + 4 outlines), animated by
  * computing each part's matrix through a dummy skeleton.
@@ -143,6 +195,9 @@ export class HordeView {
   private readonly legR = new THREE.Object3D();
   private readonly color = new THREE.Color();
   private readonly hurtColor = new THREE.Color(0xff5050);
+  private readonly headPos = new THREE.Vector3();
+  private readonly zzz: GlyphPool;
+  private readonly alert: GlyphPool;
 
   constructor() {
     const g = buildGeometries();
@@ -178,6 +233,9 @@ export class HordeView {
     this.armR.rotation.order = 'YXZ';
     this.legL.position.set(0.17, 0.32, 0);
     this.legR.position.set(-0.17, 0.32, 0);
+
+    this.zzz = new GlyphPool(this.group, glyphMaterial('z', '#dcefff'), 64);
+    this.alert = new GlyphPool(this.group, glyphMaterial('!', '#ffe066'), 16);
   }
 
   update(
@@ -192,6 +250,8 @@ export class HordeView {
     const prevById = new Map<number, ZombieSnap>();
     for (const z of prev) prevById.set(z.id, z);
 
+    this.zzz.begin();
+    this.alert.begin();
     let n = 0;
     for (const z of curr) {
       if (n >= MAX_ZOMBIES) break;
@@ -208,6 +268,18 @@ export class HordeView {
       this.root.position.set(lerp(p.x, z.x, alpha), lerp(p.y, z.y, alpha), lerp(p.z, z.z, alpha));
       this.root.rotation.set(0, lerpAngle(p.rot, z.rot, alpha), 0);
       this.root.updateMatrixWorld(true);
+
+      if (z.state === 'sleep') {
+        // Two z's drifting up from the head, each growing then shrinking away.
+        const h = this.neck.getWorldPosition(this.headPos);
+        for (let k = 0; k < 2; k++) {
+          const ph = (time * 0.45 + z.id * 0.37 + k * 0.5) % 1;
+          this.zzz.place(h.x + 0.2 + ph * 0.35, h.y + 0.45 + ph * 0.9, h.z, (0.22 + ph * 0.22) * Math.sin(ph * Math.PI));
+        }
+      } else if (z.state === 'wake') {
+        const h = this.neck.getWorldPosition(this.headPos);
+        this.alert.place(h.x, h.y + 0.8 + Math.sin(time * 14) * 0.04, h.z, 0.55 * Math.min(1, z.t * 5));
+      }
 
       this.body.setMatrixAt(n, this.torso.matrixWorld);
       this.head.setMatrixAt(n, this.neck.matrixWorld);
@@ -232,6 +304,8 @@ export class HordeView {
       this.legs.setColorAt(n * 2 + 1, this.color);
       n++;
     }
+    this.zzz.end();
+    this.alert.end();
 
     for (const m of [this.body, this.head, ...this.outlines.slice(0, 2)]) m.count = n;
     for (const m of [this.arms, this.legs, ...this.outlines.slice(2)]) m.count = n * 2;
@@ -251,6 +325,7 @@ export class HordeView {
 
     this.pose.position.set(0, 0, 0);
     this.pose.rotation.set(0, 0, 0);
+    this.torso.scale.set(1, 1, 1);
     this.legL.rotation.set(s * 0.7 * stride, 0, 0);
     this.legR.rotation.set(-s * 0.7 * stride, 0, 0);
     this.torso.position.set(0, Math.abs(c) * 0.06 * stride, 0);
@@ -290,8 +365,36 @@ export class HordeView {
         this.legR.rotation.x = -0.9;
         break;
       }
+      case 'sleep':
+        this.curl(1, time, z.id);
+        break;
+      case 'wake': {
+        // Scramble up (ease out), shaking the head awake.
+        const up = 1 - (1 - z.t) * (1 - z.t);
+        this.curl(1 - up, time, z.id);
+        this.neck.rotation.y += Math.sin(time * 18) * 0.25 * (1 - up);
+        break;
+      }
       default:
         break;
     }
+  }
+
+  /** Blend the standing pose towards lying curled up on its side (k = 1), breathing slowly. */
+  private curl(k: number, time: number, id: number): void {
+    if (k <= 0) return;
+    // Rotating onto the side drops the body to the ground beside the feet: shift it back over them.
+    this.pose.rotation.z = 1.45 * k;
+    this.pose.position.set(0.62 * k, 0.33 * k, 0);
+    const breathe = Math.sin(time * 1.6 + id) * 0.045 * k;
+    this.torso.position.y = lerp(this.torso.position.y, 0, k);
+    this.torso.rotation.set(lerp(this.torso.rotation.x, 0.35, k), 0, lerp(this.torso.rotation.z, 0, k));
+    this.torso.scale.set(1, 1 + breathe, 1 + breathe);
+    this.neck.rotation.set(lerp(this.neck.rotation.x, 0.5, k), lerp(this.neck.rotation.y, 0, k), lerp(this.neck.rotation.z, 0, k));
+    // Hugging itself, knees pulled up.
+    this.armL.rotation.set(lerp(this.armL.rotation.x, -1.1, k), 0, lerp(this.armL.rotation.z, -0.5, k));
+    this.armR.rotation.set(lerp(this.armR.rotation.x, -1.1, k), 0, lerp(this.armR.rotation.z, 0.5, k));
+    this.legL.rotation.set(lerp(this.legL.rotation.x, -1.2, k), 0, 0);
+    this.legR.rotation.set(lerp(this.legR.rotation.x, -1.3, k), 0, 0);
   }
 }

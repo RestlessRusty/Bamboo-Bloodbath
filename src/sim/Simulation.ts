@@ -1,9 +1,23 @@
 import type { RigidBody, World } from '@dimforge/rapier3d-compat';
-import { DOWNED, GOAL_RADIUS, GRAVITY, ICE_GRIP, JAVELIN, MATCH_TIME, PICKUP, SIM_DT, SURVIVOR, ZOMBIE } from '../config';
+import {
+  CRACKER,
+  DOWNED,
+  GOAL_RADIUS,
+  GRAVITY,
+  ICE_GRIP,
+  JAVELIN,
+  MATCH_TIME,
+  NOISE,
+  PICKUP,
+  SIM_DT,
+  SLEEP,
+  SURVIVOR,
+  ZOMBIE,
+} from '../config';
 import { approachAngle } from '../core/math';
 import { Rng } from '../core/rng';
 import { BotBrain, type BotWorld } from './bots';
-import type { BambooSpot, Javelin, RackSlot, Survivor, Zombie } from './entities';
+import type { BambooSpot, Cracker, CrackerDrop, Javelin, RackSlot, Survivor, Zombie } from './entities';
 import type { GameMap } from './gameMap';
 import type { Circle } from './mapLayout';
 import { RAPIER } from './physics';
@@ -23,6 +37,8 @@ const SPAWN_OFFSETS: readonly [number, number][] = [
 ];
 
 const dist2d = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.hypot(a.x - b.x, a.z - b.z);
+/** Event coordinates only drive sounds and particles: 10 cm is plenty and keeps snapshots small. */
+const r1 = (v: number) => Math.round(v * 10) / 10;
 
 function distToSegment(x: number, z: number, a: { x: number; z: number }, b: { x: number; z: number }): number {
   const abx = b.x - a.x;
@@ -40,6 +56,8 @@ export class Simulation implements BotWorld {
   readonly survivors: Survivor[] = [];
   readonly zombies: Zombie[] = [];
   readonly javelins: Javelin[] = [];
+  readonly crackers: Cracker[] = [];
+  readonly crackerDrops: CrackerDrop[] = [];
   readonly bamboo: BambooSpot[];
   readonly racks: RackSlot[];
 
@@ -54,6 +72,7 @@ export class Simulation implements BotWorld {
   private rescued = 0;
   private nextZombieId = 1;
   private nextJavelinId = 1;
+  private nextCrackerId = 1;
   private spawnTimer = 0;
 
   constructor(
@@ -98,6 +117,7 @@ export class Simulation implements BotWorld {
     for (const s of this.survivors) if (s.body) this.afterSurvivor(s);
     for (const z of this.zombies) this.afterZombie(z);
     this.updateJavelins();
+    this.updateCrackers();
     this.updatePickups();
     this.updateSpawning();
     this.cleanupZombies();
@@ -132,6 +152,7 @@ export class Simulation implements BotWorld {
         revive: s.revive,
         hurt: s.hurt,
         kills: s.kills,
+        crackers: s.crackers,
       })),
       zombies: this.zombies.map((z) => ({
         id: z.id,
@@ -147,6 +168,8 @@ export class Simulation implements BotWorld {
         from: z.from,
       })),
       javelins: this.javelins.map((j) => ({ id: j.id, x: j.x, y: j.y, z: j.z, yaw: j.yaw, pitch: j.pitch, flying: j.flying })),
+      crackers: this.crackers.map((c) => ({ id: c.id, x: c.x, y: c.y, z: c.z, flying: c.flying })),
+      crackerDrops: this.crackerDrops.map((d) => ({ id: d.id, x: d.x, y: d.y, z: d.z })),
       bamboo: this.bamboo.map((b) => b.active),
       racks: this.racks.map((r) => r.weapon),
       events,
@@ -391,11 +414,13 @@ export class Simulation implements BotWorld {
       revive: 0,
       hurt: 0,
       lastRack: -1,
+      crackers: CRACKER.start,
+      crackerCd: 0,
       brain: spec.bot ? new BotBrain(index) : null,
     });
   }
 
-  private spawnZombie(x: number, z: number, from: string | null, sleeper = false): void {
+  private spawnZombie(x: number, z: number, from: string | null, sleeper = false, asleep = false): void {
     const rot = this.rng.range(-Math.PI, Math.PI);
     this.zombies.push({
       id: this.nextZombieId++,
@@ -408,7 +433,7 @@ export class Simulation implements BotWorld {
       faceZ: Math.cos(rot),
       speed: 0,
       hp: ZOMBIE.hp,
-      state: 'walk',
+      state: asleep ? 'sleep' : 'walk',
       stateTime: 0,
       stun: 0,
       hurt: 0,
@@ -417,6 +442,7 @@ export class Simulation implements BotWorld {
       sleeper,
       speedMul: this.rng.range(0.85, 1.1),
       target: null,
+      lure: null,
       via: null,
       retarget: 0,
       biteCd: 0,
@@ -438,7 +464,7 @@ export class Simulation implements BotWorld {
       const x = this.rng.range(-half, half);
       const z = this.rng.range(-half, half);
       if (dist2d({ x, z }, this.map.layout.start) < 32) continue;
-      if (this.validSpawn(x, z)) this.spawnZombie(x, z, null, true);
+      if (this.validSpawn(x, z)) this.spawnZombie(x, z, null, true, this.rng.next() < SLEEP.share);
     }
   }
 
@@ -469,7 +495,11 @@ export class Simulation implements BotWorld {
       s.dashTime = SURVIVOR.dashTime;
       s.dashCd = SURVIVOR.dashCooldown;
       this.events.push({ e: 'dash', id: s.spec.id });
+      this.noise(s.x, s.z, NOISE.dash);
     }
+
+    s.crackerCd = Math.max(0, s.crackerCd - SIM_DT);
+    if (inp.cracker && s.crackers > 0 && s.crackerCd === 0) this.throwCracker(s, inp);
 
     if (s.attackTime >= 0) {
       s.attackTime += SIM_DT;
@@ -563,6 +593,8 @@ export class Simulation implements BotWorld {
       const nz = d > 0.01 ? dz / d : s.faceZ;
       this.damageZombie(z, w.damage, nx, nz, w.knockback, w.stun, s);
     }
+    // After the hits, so a sneak attack lands before its own noise wakes the victim.
+    this.noise(s.x, s.z, NOISE.swing[s.weapon]);
   }
 
   private throwJavelin(s: Survivor): void {
@@ -583,6 +615,28 @@ export class Simulation implements BotWorld {
       age: 0,
     });
     this.events.push({ e: 'throw', id: s.spec.id });
+  }
+
+  private throwCracker(s: Survivor, inp: PlayerInput): void {
+    const aimLen = Math.hypot(inp.ax, inp.az);
+    const dx = aimLen > 0.1 ? inp.ax / aimLen : s.faceX;
+    const dz = aimLen > 0.1 ? inp.az / aimLen : s.faceZ;
+    s.crackers--;
+    s.crackerCd = CRACKER.cooldown;
+    this.crackers.push({
+      id: this.nextCrackerId++,
+      x: s.x + dx * 0.5,
+      y: s.y + 1.2,
+      z: s.z + dz * 0.5,
+      vx: dx * CRACKER.speed,
+      vy: CRACKER.lift,
+      vz: dz * CRACKER.speed,
+      flying: true,
+      age: 0,
+      fuse: 0,
+      popCd: 0,
+    });
+    this.events.push({ e: 'toss', id: s.spec.id });
   }
 
   private hurtSurvivor(s: Survivor, damage: number): void {
@@ -653,7 +707,11 @@ export class Simulation implements BotWorld {
     s.inWater = this.map.terrain.isWet(p.x, p.z);
     s.hidden = s.attackTime < 0 && this.map.layout.thickets.some((t) => dist2d(t, s) < t.r);
     s.hurt = Math.max(0, s.hurt - SIM_DT * 3);
-    if (s.inWater && !wasInWater) this.events.push({ e: 'splash', x: s.x, z: s.z });
+    if (s.inWater && !wasInWater) {
+      this.events.push({ e: 'splash', x: r1(s.x), z: r1(s.z) });
+      this.noise(s.x, s.z, NOISE.splash);
+    }
+    if (s.state === 'active') this.footsteps(s);
 
     if (p.y < -20) {
       // Fell through the world somehow: put them back at the start.
@@ -697,10 +755,44 @@ export class Simulation implements BotWorld {
       z.state = 'walk';
     }
 
+    if (z.state === 'sleep') {
+      this.drive(body, 0, 0, ZOMBIE.accel);
+      if (z.groanCd <= 0) {
+        z.groanCd = this.rng.range(SLEEP.snoreMin, SLEEP.snoreMax);
+        if (this.survivors.some((s) => s.state === 'active' && dist2d(s, z) < SLEEP.snoreRange)) {
+          this.events.push({ e: 'snore', x: r1(z.x), z: r1(z.z) });
+        }
+      }
+      return;
+    }
+    if (z.state === 'wake') {
+      // Getting up, turning towards whatever woke it.
+      z.stateTime += SIM_DT;
+      z.rot = approachAngle(z.rot, Math.atan2(z.faceX, z.faceZ), ZOMBIE.turnSpeed * SIM_DT);
+      this.drive(body, 0, 0, ZOMBIE.accel);
+      if (z.stateTime < SLEEP.wakeTime) return;
+      z.state = 'walk';
+      z.stateTime = 0;
+      z.retarget = 0;
+      z.groanCd = this.rng.range(5, 12);
+      this.events.push({ e: 'groan', x: r1(z.x), z: r1(z.z) });
+      this.noise(z.x, z.z, NOISE.groan);
+    }
+
     if (z.retarget <= 0) {
       z.retarget = 0.25 + this.rng.next() * 0.1;
-      z.target = this.pickTarget(z);
-      z.via = z.target ? this.detour(z.x, z.z, z.target.x, z.target.z) : null;
+      const victim = this.pickTarget(z);
+      const lure = this.lureFor(z);
+      if (lure && !(victim && dist2d(victim, z) < CRACKER.ignoreNear)) {
+        // A crackling firecracker beats a survivor who isn't right in its face.
+        z.target = null;
+        z.lure = { x: lure.x, z: lure.z };
+        z.via = this.detour(z.x, z.z, lure.x, lure.z);
+      } else {
+        z.lure = null;
+        z.target = victim;
+        z.via = victim ? this.detour(z.x, z.z, victim.x, victim.z) : null;
+      }
     }
     const t = z.target && z.target.state === 'active' ? z.target : null;
 
@@ -729,6 +821,19 @@ export class Simulation implements BotWorld {
         this.hurtSurvivor(t, ZOMBIE.lungeDamage);
       }
       if (z.stateTime >= ZOMBIE.lungeTime) z.state = 'walk';
+    } else if (z.lure) {
+      // Gather round the firecracker (via a bridge or pass if needed).
+      const lx = z.lure.x - z.x;
+      const lz = z.lure.z - z.z;
+      const ld = Math.hypot(lx, lz) || 0.001;
+      const goal = z.via ?? z.lure;
+      const gx = goal.x - z.x;
+      const gz = goal.z - z.z;
+      const gl = Math.hypot(gx, gz) || 0.001;
+      dirX = gx / gl;
+      dirZ = gz / gl;
+      speed = !z.via && ld < 1.4 ? 0 : ZOMBIE.speed * z.speedMul;
+      if (speed === 0) this.faceZombie(z, lx, lz);
     } else if (t) {
       const dx = t.x - z.x;
       const dz = t.z - z.z;
@@ -840,10 +945,11 @@ export class Simulation implements BotWorld {
   }
 
   private damageZombie(z: Zombie, damage: number, nx: number, nz: number, knockback: number, stun: number, by: Survivor | null): void {
-    z.hp -= damage;
+    // Sneak attack: a sleeping zombie never sees it coming.
+    z.hp -= z.state === 'sleep' ? damage * SLEEP.sneakAttackMul : damage;
     z.hurt = 1;
     const kill = z.hp <= 0;
-    this.events.push({ e: 'hit', x: z.x, y: z.y + 0.9, z: z.z, kill });
+    this.events.push({ e: 'hit', x: r1(z.x), y: r1(z.y + 0.9), z: r1(z.z), kill });
     if (kill) {
       z.state = 'dying';
       z.stateTime = 0;
@@ -853,6 +959,7 @@ export class Simulation implements BotWorld {
         z.body = null;
       }
       if (by) by.kills++;
+      if (this.rng.next() < CRACKER.dropChance) this.dropCracker(z.x, z.z);
       return;
     }
     z.state = 'stun';
@@ -888,6 +995,8 @@ export class Simulation implements BotWorld {
         return Math.min(1, z.stateTime / ZOMBIE.lungeTime);
       case 'dying':
         return Math.min(1, z.stateTime / ZOMBIE.dyingTime);
+      case 'wake':
+        return Math.min(1, z.stateTime / SLEEP.wakeTime);
       case 'stun':
         return z.stateTime;
       default:
@@ -1026,8 +1135,130 @@ export class Simulation implements BotWorld {
     j.pitch = pitch;
     j.flying = false;
     j.age = 0;
-    if (this.map.terrain.isWet(j.x, j.z)) this.events.push({ e: 'splash', x: j.x, z: j.z });
-    else this.events.push({ e: 'thud', x: j.x, y: j.y, z: j.z });
+    if (this.map.terrain.isWet(j.x, j.z)) this.events.push({ e: 'splash', x: r1(j.x), z: r1(j.z) });
+    else this.events.push({ e: 'thud', x: r1(j.x), y: r1(j.y), z: r1(j.z) });
+    this.noise(j.x, j.z, NOISE.thud);
+  }
+
+  // ================================================================ noise & firecrackers
+
+  /** Something loud at (x, z): sleeping zombies within `radius` wake up and turn towards it. */
+  private noise(x: number, z: number, radius: number): void {
+    for (const zb of this.zombies) {
+      if (zb.state !== 'sleep' || Math.hypot(zb.x - x, zb.z - z) > radius) continue;
+      zb.state = 'wake';
+      zb.stateTime = 0;
+      this.faceZombie(zb, x - zb.x, z - zb.z);
+      this.events.push({ e: 'wake', x: r1(zb.x), z: r1(zb.z) });
+    }
+  }
+
+  /** Walking slowly is almost silent; running is heard several metres away. */
+  private footsteps(s: Survivor): void {
+    const f = s.speed / SURVIVOR.speed;
+    if (f < 0.05 || s.dashTime > 0) return;
+    let r = f <= NOISE.sneakFrac ? NOISE.sneak : NOISE.sneak + ((NOISE.run - NOISE.sneak) * (f - NOISE.sneakFrac)) / (1 - NOISE.sneakFrac);
+    if (s.hidden) r *= NOISE.thicketMul;
+    this.noise(s.x, s.z, r);
+  }
+
+  /** The nearest crackling firecracker close enough to pull this zombie in. */
+  private lureFor(z: Zombie): Cracker | null {
+    let best: Cracker | null = null;
+    let bestD: number = CRACKER.lure;
+    for (const c of this.crackers) {
+      if (c.flying) continue;
+      const d = dist2d(c, z);
+      if (d < bestD) {
+        bestD = d;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  private updateCrackers(): void {
+    const terrain = this.map.terrain;
+    const half = this.map.layout.size / 2 - 1;
+    for (let i = this.crackers.length - 1; i >= 0; i--) {
+      const c = this.crackers[i];
+      c.age += SIM_DT;
+
+      if (c.flying) {
+        c.vy -= CRACKER.gravity * SIM_DT;
+        const nx = c.x + c.vx * SIM_DT;
+        const ny = c.y + c.vy * SIM_DT;
+        const nz = c.z + c.vz * SIM_DT;
+        const ground = terrain.groundAt(nx, nz);
+        const hitTree = this.obstacles.near(nx, nz, 0.05, this.scratch).length > 0 && ny < ground + 4.5;
+        const outside = Math.abs(nx) > half || Math.abs(nz) > half;
+        if (hitTree || outside || ny <= ground + 0.05 || c.age > 3) {
+          // Bounce off a tree or the map edge: it drops where it was.
+          if (!this.landCracker(c, hitTree || outside ? c.x : nx, hitTree || outside ? c.z : nz)) this.crackers.splice(i, 1);
+          continue;
+        }
+        c.x = nx;
+        c.y = ny;
+        c.z = nz;
+        continue;
+      }
+
+      c.fuse -= SIM_DT;
+      c.popCd -= SIM_DT;
+      if (c.popCd <= 0) {
+        c.popCd = this.rng.range(0.12, 0.32);
+        this.events.push({ e: 'pop', x: r1(c.x), y: r1(c.y), z: r1(c.z) });
+      }
+      if (c.fuse <= 0) {
+        this.bang(c);
+        this.crackers.splice(i, 1);
+      }
+    }
+  }
+
+  /** Puts a firecracker down to crackle. False when it fizzles out in water. */
+  private landCracker(c: Cracker, x: number, z: number): boolean {
+    const half = this.map.layout.size / 2 - 2;
+    c.x = Math.max(-half, Math.min(half, x));
+    c.z = Math.max(-half, Math.min(half, z));
+    if (this.map.terrain.isWet(c.x, c.z)) {
+      this.events.push({ e: 'splash', x: r1(c.x), z: r1(c.z) });
+      return false;
+    }
+    c.y = this.map.terrain.groundAt(c.x, c.z) + 0.1;
+    c.flying = false;
+    c.fuse = CRACKER.popTime;
+    c.popCd = 0;
+    this.noise(c.x, c.z, CRACKER.lure);
+    return true;
+  }
+
+  /** The final bang: loud, and it knocks over (but doesn't hurt) anything right next to it. */
+  private bang(c: Cracker): void {
+    this.events.push({ e: 'bang', x: r1(c.x), y: r1(c.y), z: r1(c.z) });
+    this.noise(c.x, c.z, CRACKER.lure);
+    for (const z of this.zombies) {
+      if (z.state === 'dying' || !z.body) continue;
+      const dx = z.x - c.x;
+      const dz = z.z - c.z;
+      const d = Math.hypot(dx, dz);
+      if (d > CRACKER.bangRadius) continue;
+      z.state = 'stun';
+      z.stateTime = 0;
+      z.stun = Math.max(z.stun, CRACKER.bangStun);
+      z.lure = null;
+      const nx = d > 0.01 ? dx / d : 1;
+      const nz = d > 0.01 ? dz / d : 0;
+      const v = z.body.linvel();
+      z.body.setLinvel({ x: nx * CRACKER.bangKnockback, y: Math.min(v.y, 0) + 2, z: nz * CRACKER.bangKnockback }, true);
+    }
+  }
+
+  private dropCracker(x: number, z: number): void {
+    const terrain = this.map.terrain;
+    if (terrain.isWet(x, z)) return;
+    if (this.crackerDrops.length >= CRACKER.maxDrops) this.crackerDrops.shift();
+    this.crackerDrops.push({ id: this.nextCrackerId++, x, y: terrain.groundAt(x, z) + 0.05, z, age: 0 });
   }
 
   private updatePickups(): void {
@@ -1075,6 +1306,20 @@ export class Simulation implements BotWorld {
       taker.ammo++;
       this.javelins.splice(i, 1);
       this.events.push({ e: 'grab', id: taker.spec.id });
+    }
+
+    for (let i = this.crackerDrops.length - 1; i >= 0; i--) {
+      const d = this.crackerDrops[i];
+      d.age += SIM_DT;
+      if (d.age > CRACKER.dropLife) {
+        this.crackerDrops.splice(i, 1);
+        continue;
+      }
+      const taker = active.find((s) => s.crackers < CRACKER.max && dist2d(s, d) < CRACKER.pickupRadius);
+      if (!taker) continue;
+      taker.crackers++;
+      this.crackerDrops.splice(i, 1);
+      this.events.push({ e: 'loot', id: taker.spec.id });
     }
   }
 

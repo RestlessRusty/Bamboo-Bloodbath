@@ -97,6 +97,17 @@ export class Effects {
     this.burst(x, y + 1, z, 14, [color, 0xffffff], 2.6, 0.06, -1);
   }
 
+  /** One crack of a firecracker string. */
+  pop(x: number, y: number, z: number): void {
+    this.burst(x, y + 0.1, z, 5, [0xffe066, 0xff8a2a, 0xffffff], 2.4, 0.05, 6);
+  }
+
+  /** The final bang: a big flash of sparks and some grey smoke. */
+  bang(x: number, y: number, z: number): void {
+    this.burst(x, y + 0.2, z, 26, [0xffe066, 0xff8a2a, 0xe2463f, 0xffffff], 6, 0.08, 8);
+    this.burst(x, y + 0.3, z, 10, [0x9a9a9a, 0xbdbdbd, 0x7d7d7d], 1.4, 0.22, -1.5);
+  }
+
   update(dt: number): void {
     const o = this.o;
     for (let i = 0; i < MAX_PARTICLES; i++) {

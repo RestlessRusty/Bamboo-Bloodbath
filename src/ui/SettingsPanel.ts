@@ -3,9 +3,10 @@ import type { ControlScheme, Quality, Settings } from '../settings';
 import { el } from './dom';
 
 const HINTS: Record<ControlScheme, string> = {
-  joystick: 'Touch anywhere on the left half to move. Right buttons: attack and dash.',
-  tilt: 'Tilt the phone to walk. Hold it comfortably, then tap Recalibrate.',
-  tap: 'Tap the ground to walk there, hold to steer, swipe to attack, double-tap to dash.',
+  joystick:
+    'Touch anywhere on the left half to move; push only halfway to sneak. Right buttons: attack, dash, firecracker.',
+  tilt: 'Tilt the phone to walk (tilt gently to sneak). Hold it comfortably, then tap Recalibrate.',
+  tap: 'Tap the ground to walk there, hold to steer, swipe to attack, double-tap to dash. Orange button: firecracker.',
 };
 
 export type SettingKey = keyof Settings;
@@ -56,7 +57,7 @@ export class SettingsPanel {
           <span class="row-label">FPS</span>
           <label class="check"><input type="checkbox" data-ref="fps" /> Show counter</label>
         </div>
-        <p class="hint small">On a PC: WASD / arrows to move, Space = attack, Shift = dash, Esc = pause. Gamepads work too.</p>
+        <p class="hint small">On a PC: WASD / arrows to move (hold C to sneak), Space = attack, Shift = dash, E = firecracker, Esc = pause. Gamepads work too.</p>
         <button class="btn primary" data-act="close">Done</button>
       </div>`,
     );
