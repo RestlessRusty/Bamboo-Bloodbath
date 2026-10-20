@@ -1,4 +1,4 @@
-import { MAX_PLAYERS } from './config';
+import { DIFFICULTIES, MAX_PLAYERS, type Difficulty } from './config';
 import { PANDA_VARIANTS, WEAPON_TYPES, type PandaVariant, type WeaponType } from './sim/types';
 
 export type ControlScheme = 'joystick' | 'tilt' | 'tap';
@@ -12,6 +12,8 @@ export interface Settings {
   bots: number;
   /** Map choice for solo and for rooms you host: a map id or "random". */
   map: string;
+  /** Solo, story, and rooms you host. */
+  difficulty: Difficulty;
   controls: ControlScheme;
   quality: Quality;
   sound: boolean;
@@ -41,6 +43,7 @@ const DEFAULTS: Settings = {
   weapon: 'knife',
   bots: 1,
   map: 'valley',
+  difficulty: 'normal',
   controls: 'joystick',
   quality: isTouchDevice() ? 'low' : 'high',
   sound: true,
@@ -72,6 +75,7 @@ function sanitize(raw: unknown): Settings {
     bots: Math.max(0, Math.min(MAX_PLAYERS - 1, bots)),
     // Checked against the map list in main.ts.
     map: typeof r.map === 'string' ? r.map : DEFAULTS.map,
+    difficulty: oneOf(DIFFICULTIES, r.difficulty, DEFAULTS.difficulty),
     controls: oneOf(CONTROL_SCHEMES, r.controls, DEFAULTS.controls),
     quality: oneOf(QUALITIES, r.quality, DEFAULTS.quality),
     sound: bool(r.sound, DEFAULTS.sound),

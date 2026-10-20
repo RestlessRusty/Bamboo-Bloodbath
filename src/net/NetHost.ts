@@ -1,5 +1,5 @@
 import type { DataConnection, Peer } from 'peerjs';
-import { MAX_PLAYERS } from '../config';
+import { MAX_PLAYERS, type Difficulty } from '../config';
 import type { MapRef } from '../sim/mapLayout';
 import { NO_INPUT, type PlayerInput, type PlayerSpec, type Snapshot } from '../sim/types';
 import { encodeSnapshot } from './codec';
@@ -34,6 +34,7 @@ export class NetHost {
   bots = 0;
   /** The host's map choice (a map id or "random"). */
   mapPick: string;
+  difficulty: Difficulty;
   inGame = false;
   /** Lobby changed (someone joined/left, bot count). */
   onChange: (() => void) | null = null;
@@ -49,9 +50,11 @@ export class NetHost {
     readonly code: string,
     me: Omit<LobbyPlayer, 'id'>,
     mapPick: string,
+    difficulty: Difficulty,
   ) {
     this.players = [{ ...me, id: 'p1' }];
     this.mapPick = mapPick;
+    this.difficulty = difficulty;
     peer.on('connection', (conn) => this.accept(conn));
     // Losing the signalling server doesn't break existing connections; reconnect so new guests can join.
     peer.on('disconnected', () => {
@@ -60,12 +63,12 @@ export class NetHost {
     peer.on('error', (err) => console.warn('[host] peer error', peerErrorType(err), err));
   }
 
-  static async create(me: Omit<LobbyPlayer, 'id'>, mapPick: string): Promise<NetHost> {
+  static async create(me: Omit<LobbyPlayer, 'id'>, mapPick: string, difficulty: Difficulty): Promise<NetHost> {
     for (let attempt = 0; attempt < 5; attempt++) {
       const code = makeRoomCode();
       try {
         const peer = await openPeer(PEER_PREFIX + code);
-        return new NetHost(peer, code, me, mapPick);
+        return new NetHost(peer, code, me, mapPick, difficulty);
       } catch (err) {
         if (peerErrorType(err) !== 'unavailable-id') throw err;
         // Code already taken by another room: try another one.
@@ -90,11 +93,17 @@ export class NetHost {
     this.onChange?.();
   }
 
+  setDifficulty(difficulty: Difficulty): void {
+    this.difficulty = difficulty;
+    this.broadcastLobby();
+    this.onChange?.();
+  }
+
   start(specs: PlayerSpec[], map: MapRef): void {
     this.inGame = true;
     this.inputs.clear();
     this.inputAt.clear();
-    this.broadcast({ t: 'start', specs, map });
+    this.broadcast({ t: 'start', specs, map, difficulty: this.difficulty });
   }
 
   /** Latest input from a guest. Dash and firecracker presses are handed out only once; a guest gone quiet stands still. */
@@ -193,7 +202,7 @@ export class NetHost {
   }
 
   private broadcastLobby(): void {
-    this.broadcast({ t: 'lobby', players: this.players, bots: this.bots, map: this.mapPick });
+    this.broadcast({ t: 'lobby', players: this.players, bots: this.bots, map: this.mapPick, difficulty: this.difficulty });
   }
 
   private broadcast(msg: HostMsg): void {

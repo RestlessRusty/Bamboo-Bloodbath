@@ -6,8 +6,8 @@ type Device = 'touch' | 'keys' | 'pad';
 type Rows = readonly (readonly [string, string])[];
 
 const BUTTONS: Rows = [
-  ['Attack', 'Sword button (hold to keep swinging)'],
-  ['Dash', 'Arrow button'],
+  ['Attack', 'Big red button (hold to keep swinging)'],
+  ['Dash', 'Blue button'],
   ['Firecracker', 'Orange button'],
 ];
 

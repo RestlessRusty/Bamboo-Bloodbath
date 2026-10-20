@@ -1,8 +1,9 @@
 import type { DataConnection, Peer } from 'peerjs';
+import type { Difficulty } from '../config';
 import type { PlayerInput, PlayerSpec, Snapshot } from '../sim/types';
 import { decodeSnapshot } from './codec';
 import { openPeer, peerErrorType } from './peer';
-import { encodeInput, PEER_PREFIX, PROTOCOL_VERSION, type HostMsg, type LobbyPlayer } from './protocol';
+import { encodeInput, PEER_PREFIX, PROTOCOL_VERSION, sanitizeDifficulty, type HostMsg, type LobbyPlayer } from './protocol';
 
 /** A guest's connection to the host's room. */
 export class NetClient {
@@ -10,9 +11,11 @@ export class NetClient {
   bots = 0;
   /** The host's map choice as sent (validate before use). */
   mapPick = '';
+  /** The host's difficulty (sanitized). */
+  difficulty: Difficulty = 'normal';
   onLobby: (() => void) | null = null;
   /** `map` is unvalidated wire data (should be a MapRef). */
-  onStart: ((specs: PlayerSpec[], map: unknown) => void) | null = null;
+  onStart: ((specs: PlayerSpec[], map: unknown, difficulty: Difficulty) => void) | null = null;
   onSnapshot: ((snap: Snapshot) => void) | null = null;
   onClosed: ((reason: string) => void) | null = null;
   private closed = false;
@@ -90,10 +93,14 @@ export class NetClient {
         this.players = Array.isArray(msg.players) ? msg.players : [];
         this.bots = typeof msg.bots === 'number' ? msg.bots : 0;
         this.mapPick = typeof msg.map === 'string' ? msg.map : '';
+        this.difficulty = sanitizeDifficulty(msg.difficulty);
         this.onLobby?.();
         break;
       case 'start':
-        if (Array.isArray(msg.specs)) this.onStart?.(msg.specs, msg.map);
+        if (Array.isArray(msg.specs)) {
+          this.difficulty = sanitizeDifficulty(msg.difficulty);
+          this.onStart?.(msg.specs, msg.map, this.difficulty);
+        }
         break;
       case 'snap':
         this.onSnapshot?.(decodeSnapshot(msg.s));

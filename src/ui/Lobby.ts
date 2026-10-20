@@ -1,8 +1,8 @@
-import { MAX_PLAYERS } from '../config';
+import { MAX_PLAYERS, type Difficulty } from '../config';
 import { CODE_LENGTH, normalizeCode, type LobbyPlayer } from '../net/protocol';
 import { PANDA_LOOKS } from '../render/pandaModel';
 import { WEAPONS } from '../sim/weapons';
-import { el } from './dom';
+import { difficultyButtons, el, markActive } from './dom';
 import { MapPicker } from './MapPicker';
 
 export interface LobbyHandlers {
@@ -12,6 +12,7 @@ export interface LobbyHandlers {
   onBots(n: number): void;
   /** Host cycles the map choice. */
   onMap(dir: number): void;
+  onDifficulty(difficulty: Difficulty): void;
   /** Leave the room (or the multiplayer screen) and return to the main menu. */
   onLeave(): void;
 }
@@ -22,6 +23,7 @@ export interface RoomView {
   bots: number;
   /** Map id or "random". */
   mapPick: string;
+  difficulty: Difficulty;
   isHost: boolean;
   myId: string;
 }
@@ -66,6 +68,10 @@ export class Lobby {
           <span>Bot buddies</span>
           <div class="seg" data-ref="bots"></div>
         </div>
+        <div class="picker">
+          <span>Difficulty</span>
+          <div class="seg" data-ref="difficulty">${difficultyButtons()}</div>
+        </div>
         <p class="hint" data-ref="room-hint"></p>
         <button class="btn primary big" data-act="start" data-ref="start">Start!</button>
         <button class="btn ghost" data-act="leave">Leave room</button>
@@ -105,6 +111,9 @@ export class Lobby {
           break;
         case 'bots':
           h.onBots(Number(t.dataset.v) || 0);
+          break;
+        case 'difficulty':
+          h.onDifficulty(t.dataset.v as Difficulty);
           break;
       }
     });
@@ -162,6 +171,9 @@ export class Lobby {
       bots.appendChild(b);
     }
     this.ref('bots-row').hidden = maxBots === 0 && v.bots === 0;
+    const diff = this.ref('difficulty');
+    markActive(diff, v.difficulty);
+    for (const b of diff.querySelectorAll<HTMLButtonElement>('button')) b.disabled = !v.isHost;
     this.ref('start').hidden = !v.isHost;
     this.ref('room-hint').textContent = v.isHost
       ? 'Share the code with friends (up to 4 pandas), then press Start.'

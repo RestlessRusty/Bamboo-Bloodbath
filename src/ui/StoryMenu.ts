@@ -1,17 +1,18 @@
+import type { Difficulty } from '../config';
 import { loadMap } from '../game/maps';
 import { drawMinimap } from '../render/minimap';
 import type { Settings } from '../settings';
 import { refOf } from '../sim/maps';
 import type { Chapter } from '../sim/story/types';
 import type { StoryProgress } from '../storyProgress';
-import { el } from './dom';
+import { difficultyButtons, el, markActive } from './dom';
 
 export interface StoryMenuHandlers {
   onPlay(chapter: number): void;
   /** A chapter was picked in the list: show its map behind the menu. */
   onSelect(chapter: number): void;
   onBack(): void;
-  /** Bot buddies changed: persist settings. */
+  /** Bot buddies or difficulty changed: persist settings. */
   onChange(): void;
 }
 
@@ -51,6 +52,10 @@ export class StoryMenu {
             <button data-act="bots" data-v="3">3</button>
           </div>
         </div>
+        <div class="picker">
+          <span>Difficulty</span>
+          <div class="seg" data-ref="difficulty">${difficultyButtons()}</div>
+        </div>
         <div class="menu-buttons">
           <button class="btn primary big" data-act="play" data-ref="play">Play</button>
           <button class="btn ghost" data-act="back">Back</button>
@@ -73,6 +78,11 @@ export class StoryMenu {
           break;
         case 'bots':
           this.settings.bots = Number(t.dataset.v) || 0;
+          this.refresh();
+          this.h.onChange();
+          break;
+        case 'difficulty':
+          this.settings.difficulty = t.dataset.v as Difficulty;
           this.refresh();
           this.h.onChange();
           break;
@@ -135,6 +145,7 @@ export class StoryMenu {
     for (const b of this.ref('bots').querySelectorAll<HTMLElement>('[data-v]')) {
       b.classList.toggle('active', Number(b.dataset.v) === this.settings.bots);
     }
+    markActive(this.ref('difficulty'), this.settings.difficulty);
   }
 
   private ref<T extends HTMLElement = HTMLElement>(name: string): T {

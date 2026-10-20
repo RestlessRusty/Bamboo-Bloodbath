@@ -1,9 +1,22 @@
-import { cyclePick } from '../game/maps';
+import { DIFFICULTY, type Difficulty } from '../config';
+import { cyclePick, RANDOM_PICK, type MapPick } from '../game/maps';
+import { getRecord } from '../records';
 import { PANDA_LOOKS } from '../render/pandaModel';
 import type { Settings } from '../settings';
 import { PANDA_VARIANTS, type WeaponType } from '../sim/types';
-import { el } from './dom';
+import { difficultyButtons, el, formatTime, markActive } from './dom';
 import { MapPicker } from './MapPicker';
+
+/** One line of personal records for a map at a difficulty ("" for the random pick). */
+function recordLine(pick: MapPick, difficulty: Difficulty): string {
+  if (pick === RANDOM_PICK) return '';
+  const r = getRecord(pick, difficulty);
+  const label = DIFFICULTY[difficulty].label;
+  if (r.plays === 0) return `${label}: not played yet`;
+  const parts = [`won ${r.wins}/${r.plays}`, `most kills ${r.mostKills}`];
+  if (r.bestTime !== null) parts.unshift(`best ${formatTime(r.bestTime)}`);
+  return `${label}: ${parts.join(' · ')}`;
+}
 
 export interface MenuHandlers {
   onStory(): void;
@@ -61,6 +74,10 @@ export class Menu {
             <button data-act="bots" data-v="3">3</button>
           </div>
         </div>
+        <div class="picker">
+          <span>Difficulty</span>
+          <div class="seg" data-ref="difficulty">${difficultyButtons()}</div>
+        </div>
         <div data-ref="map"></div>
         <div class="menu-buttons">
           <button class="btn primary big story" data-act="story">Story</button>
@@ -77,6 +94,7 @@ export class Menu {
     this.mapPicker = new MapPicker((dir) => {
       settings.map = cyclePick(settings.map, dir);
       this.mapPicker.set(settings.map, true);
+      this.refresh();
       h.onChange();
       h.onMapPreview();
     });
@@ -129,6 +147,11 @@ export class Menu {
           this.refresh();
           h.onChange();
           break;
+        case 'difficulty':
+          settings.difficulty = t.dataset.v as Difficulty;
+          this.refresh();
+          h.onChange();
+          break;
       }
     });
 
@@ -138,7 +161,7 @@ export class Menu {
   show(message = ''): void {
     this.ref('toast').textContent = message;
     this.mapPicker.set(this.settings.map, true); // may have changed in a lobby
-    this.refresh(); // bot count may have changed in the story menu
+    this.refresh(); // bots / difficulty may have changed in the story menu or lobby, records after a match
     this.el.hidden = false;
   }
 
@@ -163,6 +186,8 @@ export class Menu {
     for (const b of this.ref('bots').querySelectorAll<HTMLElement>('[data-v]')) {
       b.classList.toggle('active', Number(b.dataset.v) === this.settings.bots);
     }
+    markActive(this.ref('difficulty'), this.settings.difficulty);
+    this.mapPicker.setNote(recordLine(this.settings.map, this.settings.difficulty));
   }
 
   private ref<T extends HTMLElement = HTMLElement>(name: string): T {

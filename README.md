@@ -37,6 +37,14 @@ dismiss).
 
 On the phone, open the URL and use the browser's *Add to Home screen* to install it fullscreen.
 
+### Offline
+
+The production build registers a service worker ([public/sw.js](public/sw.js)) that keeps a copy of
+the game on the device after the first visit, so solo and story mode start without a connection
+(multiplayer still needs one). The page is always fetched fresh when online, so a new deploy shows
+up on the next launch; files from older builds are dropped automatically. The dev server doesn't
+register it.
+
 ## How to play
 
 - Pick a **map** in the menu: Bamboo Valley, River Crossing, Snowy Pass, or **Random Valley** (a new
@@ -65,6 +73,14 @@ On the phone, open the URL and use the browser's *Add to Home screen* to install
 - At 0 HP you're **downed**. A teammate standing next to you for 2.5 s revives you. Nobody comes
   within 10 s → you **turn into a zombie** and keep your name… in green.
 - **Bot buddies** (0–3) follow you, fight, revive and eat on their own.
+- **Difficulty** (Easy / Normal / Hard, in the menu, story menu and room): scales the horde size, how
+  hard and fast zombies are, and how many start asleep (see `DIFFICULTY` in `config.ts`). It applies to
+  story chapters too. In multiplayer the host picks it.
+- **Records** (saved on the device, per map and difficulty): matches played and won, best time for a
+  won match, and most kills. Shown under the map in the menu and on the end screen. Story chapters
+  don't count.
+- Bridges, fords and ridge passes, plus a few metres before and after each, are always kept free of
+  trees and rocks.
 
 ## Story mode
 

@@ -103,6 +103,7 @@ export class Hud {
         <div class="card">
           <h2 data-ref="end-title"></h2>
           <p data-ref="end-text"></p>
+          <p class="end-records" data-ref="end-records" hidden></p>
           <p class="hint" data-ref="end-wait">Waiting for the host…</p>
           <button class="btn primary" data-act="restart" data-end="solo">Play again</button>
           <button class="btn primary" data-act="lobby" data-end="host">Back to lobby</button>
@@ -199,6 +200,7 @@ export class Hud {
   showEnd(won: boolean, text: string, mode: EndMode, title = won ? 'Rescued!' : 'Game over', checkpoint = false): void {
     this.ref('end-title').textContent = title;
     this.ref('end-text').textContent = text;
+    this.ref('end-records').hidden = true;
     this.ref('end-wait').hidden = mode !== 'guest';
     const tags = new Set<string>([mode]);
     if (mode === 'story') {
@@ -211,6 +213,14 @@ export class Hud {
     this.endPanel.classList.toggle('won', won);
     this.pausePanel.hidden = true;
     this.endPanel.hidden = false;
+  }
+
+  /** Personal records line on the end screen (call after showEnd); `isNew` makes it stand out. */
+  showRecords(text: string, isNew: boolean): void {
+    const r = this.ref('end-records');
+    r.textContent = text;
+    r.classList.toggle('new', isNew);
+    r.hidden = !text;
   }
 
   update(snap: Snapshot, fps: number | null): void {

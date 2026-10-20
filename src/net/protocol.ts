@@ -1,10 +1,11 @@
+import { DIFFICULTIES, type Difficulty } from '../config';
 import { clamp } from '../core/math';
 import type { MapRef } from '../sim/mapLayout';
 import { PANDA_VARIANTS, WEAPON_TYPES, type PandaVariant, type PlayerInput, type PlayerSpec, type WeaponType } from '../sim/types';
 import type { EncodedSnapshot } from './codec';
 
 /** Bump when messages change so old and new versions refuse to mix. */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Room code "K7QX" becomes PeerJS id "bamboo-bloodbath-v1-K7QX" for the host. */
 export const PEER_PREFIX = 'bamboo-bloodbath-v1-';
@@ -41,9 +42,9 @@ export type HostMsg =
   | { t: 'welcome'; id: string }
   | { t: 'reject'; reason: string }
   /** `map` is the host's pick (a map id or "random"). */
-  | { t: 'lobby'; players: LobbyPlayer[]; bots: number; map: string }
+  | { t: 'lobby'; players: LobbyPlayer[]; bots: number; map: string; difficulty: Difficulty }
   /** `map` is the concrete map everyone builds for this match. */
-  | { t: 'start'; specs: PlayerSpec[]; map: MapRef }
+  | { t: 'start'; specs: PlayerSpec[]; map: MapRef; difficulty: Difficulty }
   | { t: 'snap'; s: EncodedSnapshot }
   | { t: 'bye'; reason: string };
 
@@ -76,6 +77,10 @@ export function sanitizeName(raw: unknown): string {
 
 export function sanitizeVariant(raw: unknown): PandaVariant {
   return PANDA_VARIANTS.includes(raw as PandaVariant) ? (raw as PandaVariant) : 'giant';
+}
+
+export function sanitizeDifficulty(raw: unknown): Difficulty {
+  return DIFFICULTIES.includes(raw as Difficulty) ? (raw as Difficulty) : 'normal';
 }
 
 export function sanitizeWeapon(raw: unknown): WeaponType {

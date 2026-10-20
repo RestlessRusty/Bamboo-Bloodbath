@@ -24,6 +24,8 @@ export interface Crossing {
   a: Pt;
   b: Pt;
   length: number;
+  /** Half the width of the walkway (bridge deck, shallow part of a ford, floor of a pass). */
+  halfWidth: number;
 }
 
 const STEPS = 8;

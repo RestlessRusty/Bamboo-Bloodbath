@@ -73,7 +73,20 @@ export interface MapProps {
 
 const RACK_WEAPONS: readonly WeaponType[] = ['axe', 'javelin', 'knife', 'axe', 'javelin', 'axe'];
 
+/** How far before and after each bridge, ford or pass its walkway is kept free of trees and rocks. */
+const PASSAGE_APPROACH = 6;
+/** Room beside a walkway: the biggest rock (radius ~1.2) plus a panda still can't narrow it. */
+const PASSAGE_PAD = 2.5;
+
 const dist = (x: number, z: number, c: { x: number; z: number }) => Math.hypot(x - c.x, z - c.z);
+
+function distToSegment(x: number, z: number, ax: number, az: number, bx: number, bz: number): number {
+  const abx = bx - ax;
+  const abz = bz - az;
+  const len2 = abx * abx + abz * abz || 1e-9;
+  const t = Math.max(0, Math.min(1, ((x - ax) * abx + (z - az) * abz) / len2));
+  return Math.hypot(ax + abx * t - x, az + abz * t - z);
+}
 
 /** Deterministically scatters everything that lives on the map. */
 export function generateProps(layout: MapLayout, terrain: Terrain, route: Route): MapProps {
@@ -88,12 +101,28 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
   const nearHilltop = (x: number, z: number, gap: number) => hills.some((h) => dist(x, z, h) < gap);
   const nearCrossing = (x: number, z: number, gap: number) =>
     terrain.crossings.some((c) => dist(x, z, c.a) < gap || dist(x, z, c.b) < gap);
+  // The whole walkway through each bridge, ford and pass, plus a run-up on both sides. Inside a pass the
+  // ground is open (ridgeAmount 0), so without this a tree or rock could land in the middle of it.
+  const inPassage = (x: number, z: number, pad: number) =>
+    terrain.crossings.some((c) => {
+      const len = c.length || 1;
+      const ux = ((c.b.x - c.a.x) / len) * PASSAGE_APPROACH;
+      const uz = ((c.b.z - c.a.z) / len) * PASSAGE_APPROACH;
+      return distToSegment(x, z, c.a.x - ux, c.a.z - uz, c.b.x + ux, c.b.z + uz) < c.halfWidth + pad;
+    });
+  // Story buildings are placed by hand (and are solid): flag any that would block a crossing.
+  if (import.meta.env.DEV) {
+    for (const l of landmarks) {
+      if (inPassage(l.x, l.z, l.r)) console.warn(`[map ${layout.id}] landmark at (${l.x}, ${l.z}) blocks a bridge, ford or pass`);
+    }
+  }
   const keepClear = (x: number, z: number) =>
     dist(x, z, start) < start.r + 4 ||
     dist(x, z, goal) < goal.r + 4 ||
     nearPond(x, z, 2.5) ||
     terrain.nearRiver(x, z, 2.5) ||
     nearCrossing(x, z, 5) ||
+    inPassage(x, z, PASSAGE_PAD) ||
     terrain.ridgeAmount(x, z) > 0.02 ||
     nearHilltop(x, z, 6) ||
     nearLandmark(x, z, 5) ||
@@ -109,6 +138,7 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
     !nearPond(x, z, 1.5) &&
     !terrain.nearRiver(x, z, 1.5) &&
     !nearCrossing(x, z, 3) &&
+    !inPassage(x, z, 0.5) &&
     terrain.ridgeAmount(x, z) < 0.02 &&
     !nearLandmark(x, z, 2) &&
     !terrain.isWet(x, z);

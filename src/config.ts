@@ -67,6 +67,22 @@ export const ZOMBIE = {
   despawnRadius: 55,
 };
 
+export type Difficulty = 'easy' | 'normal' | 'hard';
+export const DIFFICULTIES: readonly Difficulty[] = ['easy', 'normal', 'hard'];
+
+/**
+ * Multipliers on top of the normal rules (story chapters' own rules included). In multiplayer the host's
+ * choice counts. Hard never raises the horde cap above ZOMBIE.max: phones can't draw many more.
+ */
+export const DIFFICULTY: Record<
+  Difficulty,
+  { label: string; horde: number; damage: number; zombieSpeed: number; sleepShare: number }
+> = {
+  easy: { label: 'Easy', horde: 0.65, damage: 0.6, zombieSpeed: 0.9, sleepShare: 1.25 },
+  normal: { label: 'Normal', horde: 1, damage: 1, zombieSpeed: 1, sleepShare: 1 },
+  hard: { label: 'Hard', horde: 1.35, damage: 1.35, zombieSpeed: 1.1, sleepShare: 0.75 },
+};
+
 /** Most of the starting horde is asleep until something noisy happens nearby. */
 export const SLEEP = {
   /** Share of the zombies placed at match start that are asleep. */

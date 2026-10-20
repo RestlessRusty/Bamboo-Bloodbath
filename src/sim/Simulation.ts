@@ -1,6 +1,7 @@
 import type { RigidBody, World } from '@dimforge/rapier3d-compat';
 import {
   CRACKER,
+  DIFFICULTY,
   DOWNED,
   GOAL_RADIUS,
   GRAVITY,
@@ -13,6 +14,7 @@ import {
   SLEEP,
   SURVIVOR,
   ZOMBIE,
+  type Difficulty,
 } from '../config';
 import { approachAngle } from '../core/math';
 import { Rng } from '../core/rng';
@@ -40,6 +42,8 @@ export interface SimOptions {
   goalRescue?: boolean;
   /** Story objectives; it decides when the match is won. */
   mission?: Mission | null;
+  /** Scales the horde (on top of `horde` / `sleepShare`), zombie damage and speed. Default normal. */
+  difficulty?: Difficulty;
 }
 
 /** Height of the capsule centre above the feet (same for pandas and zombies). */
@@ -94,6 +98,9 @@ export class Simulation implements BotWorld, MissionHost {
   private spawnTimer = 0;
   private readonly horde: HordeRules;
   private readonly sleepShare: number;
+  /** Difficulty multipliers on zombie bites / lunges and walking speed. */
+  private readonly zombieDamage: number;
+  private readonly zombieSpeed: number;
   private readonly goalRescue: boolean;
   private readonly mission: Mission | null;
   private readonly spawnAt: { x: number; z: number; toward: { x: number; z: number } };
@@ -108,14 +115,23 @@ export class Simulation implements BotWorld, MissionHost {
 
     this.timed = options.timeLimit !== null;
     this.timeLeft = options.timeLimit ?? MATCH_TIME;
-    this.horde = {
+    const diff = DIFFICULTY[options.difficulty ?? 'normal'];
+    const rules: HordeRules = {
       base: ZOMBIE.base,
       perSurvivor: ZOMBIE.perSurvivor,
       progressBonus: ZOMBIE.progressBonus,
       max: ZOMBIE.max,
       ...options.horde,
     };
-    this.sleepShare = options.sleepShare ?? SLEEP.share;
+    this.horde = {
+      ...rules,
+      base: rules.base * diff.horde,
+      perSurvivor: rules.perSurvivor * diff.horde,
+      max: Math.round(rules.max * Math.min(1, diff.horde)),
+    };
+    this.sleepShare = Math.min(0.9, (options.sleepShare ?? SLEEP.share) * diff.sleepShare);
+    this.zombieDamage = diff.damage;
+    this.zombieSpeed = diff.zombieSpeed;
     this.goalRescue = options.goalRescue ?? true;
     this.mission = options.mission ?? null;
     const { start } = map.layout;
@@ -522,7 +538,7 @@ export class Simulation implements BotWorld, MissionHost {
       from,
       sleeper,
       hunt: false,
-      speedMul: this.rng.range(0.85, 1.1),
+      speedMul: this.rng.range(0.85, 1.1) * this.zombieSpeed,
       target: null,
       lure: null,
       via: null,
@@ -887,7 +903,7 @@ export class Simulation implements BotWorld, MissionHost {
       if (t) this.faceZombie(z, t.x - z.x, t.z - z.z);
       if (!z.biteDone && z.stateTime >= ZOMBIE.biteWindup) {
         z.biteDone = true;
-        if (t && dist2d(t, z) < ZOMBIE.biteReach) this.hurtSurvivor(t, ZOMBIE.biteDamage);
+        if (t && dist2d(t, z) < ZOMBIE.biteReach) this.hurtSurvivor(t, ZOMBIE.biteDamage * this.zombieDamage);
       }
       if (z.stateTime >= ZOMBIE.biteTime) {
         z.state = 'walk';
@@ -900,7 +916,7 @@ export class Simulation implements BotWorld, MissionHost {
       speed = ZOMBIE.lungeSpeed;
       if (t && !z.biteDone && dist2d(t, z) < 1.1) {
         z.biteDone = true;
-        this.hurtSurvivor(t, ZOMBIE.lungeDamage);
+        this.hurtSurvivor(t, ZOMBIE.lungeDamage * this.zombieDamage);
       }
       if (z.stateTime >= ZOMBIE.lungeTime) z.state = 'walk';
     } else if (z.lure) {

@@ -307,6 +307,12 @@ small {
   text-align: center;
   font-size: 18px;
 }
+.map-note {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green-dark);
+}
 .map-row .arrow-btn[hidden] {
   display: inline-block !important;
   visibility: hidden;
@@ -384,6 +390,18 @@ small {
   width: 20px;
   height: 20px;
   accent-color: var(--green);
+}
+
+/* ------------------------------------------------------------ end screen records */
+
+.end-records {
+  font-size: 14px !important;
+  font-weight: 600;
+  opacity: 0.8;
+}
+.end-records.new {
+  opacity: 1;
+  color: var(--blood);
 }
 
 /* ------------------------------------------------------------ how to play */

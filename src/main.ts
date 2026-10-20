@@ -1,6 +1,6 @@
 import './style.css';
 import { Sfx } from './audio/Sfx';
-import { MATCH_TIME } from './config';
+import { DIFFICULTY, MATCH_TIME, type Difficulty } from './config';
 import { LocalGame } from './game/LocalGame';
 import { cyclePick, hutDirection, isMapRef, isValidPick, loadMap, previewMap, resolvePick } from './game/maps';
 import { RemoteGame } from './game/RemoteGame';
@@ -10,6 +10,7 @@ import { NetClient } from './net/NetClient';
 import { NetHost } from './net/NetHost';
 import type { LobbyPlayer } from './net/protocol';
 import { Renderer } from './render/Renderer';
+import { addResult } from './records';
 import { loadSettings, saveSettings } from './settings';
 import { botName } from './sim/bots';
 import type { MapRef } from './sim/mapLayout';
@@ -72,6 +73,8 @@ let netToken = 0;
 let wakeLock: { release(): Promise<void> } | null = null;
 const fallbackName = `Panda${Math.floor(100 + Math.random() * 900)}`;
 const progress = loadProgress(CHAPTERS.length);
+/** The quick-play match being played (solo, host or guest), for the records. */
+let match: { mapId: string; difficulty: Difficulty } | null = null;
 /** Story chapter being played, and where a retry starts (stage and the clock at that point). */
 let run: { chapter: number; checkpoint: number; clock: number | null } | null = null;
 
@@ -133,6 +136,12 @@ const lobby = new Lobby(uiEl, {
     settings.map = cyclePick(host.mapPick, dir);
     saveSettings(settings);
     host.setMap(settings.map);
+  },
+  onDifficulty: (difficulty) => {
+    if (!host) return;
+    settings.difficulty = difficulty;
+    saveSettings(settings);
+    host.setDifficulty(difficulty);
   },
   onLeave: () => leaveToMenu(),
 });
@@ -292,7 +301,10 @@ async function startSolo(): Promise<void> {
     { id: 'p1', name: nickname(), variant: settings.variant, weapon: settings.weapon, bot: false },
     ...botSpecs(settings.bots),
   ];
-  enterGame(resolvePick(settings.map), () => new LocalGame(ctx, specs, localId, onGameEnd));
+  const mapRef = resolvePick(settings.map);
+  const difficulty = settings.difficulty;
+  match = { mapId: mapRef.id, difficulty };
+  enterGame(mapRef, () => new LocalGame(ctx, specs, localId, onGameEnd, null, { difficulty }));
 }
 
 function onGameEnd(snap: Snapshot): void {
@@ -303,14 +315,23 @@ function onGameEnd(snap: Snapshot): void {
 
   const me = snap.survivors.find((s) => s.id === localId);
   const kills = me ? ` You bonked ${me.kills} zombie${me.kills === 1 ? '' : 's'}.` : '';
+  const time = MATCH_TIME - snap.timeLeft;
   let text: string;
   if (won) {
     const who = snap.survivors.length > 1 ? `${snap.rescued} of ${snap.survivors.length} pandas made it` : 'You made it';
-    text = `${who} in ${formatTime(MATCH_TIME - snap.timeLeft)}.${kills}`;
+    text = `${who} in ${formatTime(time)}.${kills}`;
   } else {
     text = (snap.timeLeft <= 0 ? "Time's up! The rescue hut left without you." : 'The zombies got everyone…') + kills;
   }
   hud.showEnd(won, text, mode);
+
+  if (!match) return;
+  const res = addResult(match.mapId, match.difficulty, won, time, me?.kills ?? 0);
+  const r = res.record;
+  const news = [res.newBestTime && 'New best time!', res.newMostKills && 'New kill record!'].filter(Boolean).join(' ');
+  const best = r.bestTime !== null ? `best ${formatTime(r.bestTime)} · ` : '';
+  hud.showRecords(`${news ? `${news} ` : ''}${DIFFICULTY[match.difficulty].label}: ${best}won ${r.wins}/${r.plays} · most kills ${r.mostKills}`, !!news);
+  match = null;
 }
 
 // ------------------------------------------------------------------ story mode
@@ -361,7 +382,8 @@ async function startChapter(index: number, from: number, clock: number | null): 
     ...(hasDoc(ch) ? [DOC_SPEC] : []),
   ];
   const intro = from > 0 ? `Chapter ${index + 1}: back at the checkpoint` : `Chapter ${index + 1}: ${ch.title}`;
-  enterGame(refOf(ch.map), () => new LocalGame(ctx, specs, localId, onStoryEnd, null, chapterOptions(ch, from, clock)), intro);
+  const options = { ...chapterOptions(ch, from, clock), difficulty: settings.difficulty };
+  enterGame(refOf(ch.map), () => new LocalGame(ctx, specs, localId, onStoryEnd, null, options), intro);
   storyHud.start(ch, nickname(), bots[0]?.name ?? null);
 }
 
@@ -454,9 +476,11 @@ document.addEventListener('visibilitychange', () => {
 
 function showRoom(): void {
   if (host) {
-    lobby.showRoom({ code: host.code, players: host.players, bots: host.bots, mapPick: host.mapPick, isHost: true, myId: 'p1' });
+    const h = host;
+    lobby.showRoom({ code: h.code, players: h.players, bots: h.bots, mapPick: h.mapPick, difficulty: h.difficulty, isHost: true, myId: 'p1' });
   } else if (client) {
-    lobby.showRoom({ code: client.code, players: client.players, bots: client.bots, mapPick: client.mapPick, isHost: false, myId: client.myId });
+    const c = client;
+    lobby.showRoom({ code: c.code, players: c.players, bots: c.bots, mapPick: c.mapPick, difficulty: c.difficulty, isHost: false, myId: c.myId });
   }
 }
 
@@ -464,7 +488,7 @@ async function createRoom(): Promise<void> {
   const token = ++netToken;
   lobby.showBusy('Creating room…');
   try {
-    const h = await NetHost.create(profile(), settings.map);
+    const h = await NetHost.create(profile(), settings.map, settings.difficulty);
     if (token !== netToken) {
       h.close();
       return;
@@ -506,11 +530,12 @@ async function joinRoom(code: string): Promise<void> {
       }
       showRoom();
     };
-    c.onStart = (specs, mapRef) => {
+    c.onStart = (specs, mapRef, difficulty) => {
       mode = 'guest';
       localId = c.myId;
       // Same protocol version means the same maps, so this fallback should never be needed.
       const ref = isMapRef(mapRef) ? mapRef : refOf(DEFAULT_MAP);
+      match = { mapId: ref.id, difficulty };
       enterGame(ref, () => new RemoteGame(ctx, specs, c.myId, onGameEnd, c));
     };
     c.onSnapshot = (snap) => {
@@ -535,8 +560,10 @@ async function hostStart(): Promise<void> {
   mode = 'host';
   localId = 'p1';
   const mapRef = resolvePick(h.mapPick);
+  const difficulty = h.difficulty;
   h.start(specs, mapRef);
-  enterGame(mapRef, () => new LocalGame(ctx, specs, localId, onGameEnd, h));
+  match = { mapId: mapRef.id, difficulty };
+  enterGame(mapRef, () => new LocalGame(ctx, specs, localId, onGameEnd, h, { difficulty }));
 }
 
 function hostBackToLobby(): void {
@@ -574,3 +601,23 @@ function frame(now: number): void {
 requestAnimationFrame(frame);
 
 document.getElementById('boot')?.remove();
+
+// ------------------------------------------------------------------ offline support
+
+// Production only: in dev a saved copy would get in the way of hot reloading.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker
+      .register('./sw.js')
+      .then(() => navigator.serviceWorker.ready)
+      .then((reg) => {
+        // Everything this build loaded, so the worker can save it (and drop older builds' files).
+        const urls = performance
+          .getEntriesByType('resource')
+          .map((e) => e.name)
+          .filter((u) => u.startsWith(location.origin) || /^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));
+        reg.active?.postMessage({ t: 'warm', urls });
+      })
+      .catch((err) => console.warn('[offline] service worker not available', err));
+  });
+}

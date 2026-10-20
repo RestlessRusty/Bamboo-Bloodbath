@@ -28,7 +28,7 @@ export class Terrain {
     for (const ridge of this.ridges) {
       for (const g of ridge.gaps) {
         const p = ridge.at(ridge.fractionOf(g.s));
-        this.crossings.push(crossing('gap', p, -p.tz, p.tx, ridge.halfWidth + 2));
+        this.crossings.push(crossing('gap', p, -p.tz, p.tx, ridge.halfWidth + 2, g.half));
       }
     }
     this.rivers = layout.rivers.map((r) => new RiverShape(r, r.width / 2 + RIVER_BANK + 5));
@@ -38,12 +38,14 @@ export class Terrain {
         const p = river.at(f);
         const bridge: Bridge = { x: p.x, z: p.z, dirX: -p.tz, dirZ: p.tx, halfLength: hw + 2.5, halfWidth: 1.5, top: FLAT_LEVEL + 0.05 };
         this.bridges.push(bridge);
-        this.crossings.push(crossing('bridge', p, bridge.dirX, bridge.dirZ, bridge.halfLength + 1.2));
+        this.crossings.push(crossing('bridge', p, bridge.dirX, bridge.dirZ, bridge.halfLength + 1.2, bridge.halfWidth));
       }
       for (const f of river.def.fords) {
         const p = river.at(f);
-        this.fords.push({ x: p.x, z: p.z, r: Math.max(4, river.def.width * 0.75) });
-        this.crossings.push(crossing('ford', p, -p.tz, p.tx, hw + 2.5));
+        const ford = { x: p.x, z: p.z, r: Math.max(4, river.def.width * 0.75) };
+        this.fords.push(ford);
+        // fordAmount is full inside 0.6 r: that's the part shallow enough to wade.
+        this.crossings.push(crossing('ford', p, -p.tz, p.tx, hw + 2.5, ford.r * 0.6));
       }
     }
   }
@@ -197,12 +199,20 @@ function ridgeProfile(ridge: RidgeShape, x: number, z: number): number {
   return (1 - smoothstep(ridge.crest, ridge.halfWidth, p.d)) * (1 - ridge.openAt(p.s));
 }
 
-function crossing(kind: Crossing['kind'], p: { x: number; z: number }, dx: number, dz: number, half: number): Crossing {
+function crossing(
+  kind: Crossing['kind'],
+  p: { x: number; z: number },
+  dx: number,
+  dz: number,
+  half: number,
+  halfWidth: number,
+): Crossing {
   return {
     kind,
     a: { x: p.x - dx * half, z: p.z - dz * half },
     b: { x: p.x + dx * half, z: p.z + dz * half },
     length: half * 2,
+    halfWidth,
   };
 }
 
