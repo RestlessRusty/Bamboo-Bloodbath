@@ -29,13 +29,22 @@ export function toon(color: number): THREE.MeshToonMaterial {
   return m;
 }
 
-/** Frees the GPU resources of everything under `root` (except shared materials). */
+/** Geometries reused across objects: never disposed. */
+const sharedGeos = new WeakSet<THREE.BufferGeometry>();
+
+/** Marks a cached geometry as shared so `disposeObject` leaves it alone. */
+export function sharedGeometry<T extends THREE.BufferGeometry>(geo: T): T {
+  sharedGeos.add(geo);
+  return geo;
+}
+
+/** Frees the GPU resources of everything under `root` (except shared materials and geometries). */
 export function disposeObject(root: THREE.Object3D): void {
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
   root.traverse((o) => {
     const mesh = o as THREE.Mesh;
-    if (mesh.geometry) geometries.add(mesh.geometry);
+    if (mesh.geometry && !sharedGeos.has(mesh.geometry)) geometries.add(mesh.geometry);
     const m = mesh.material;
     if (m) for (const mat of Array.isArray(m) ? m : [m]) if (!shared.has(mat)) materials.add(mat);
     if (o instanceof THREE.InstancedMesh) o.dispose();

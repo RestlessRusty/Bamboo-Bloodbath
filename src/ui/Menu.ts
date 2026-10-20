@@ -10,6 +10,7 @@ export interface MenuHandlers {
   onPlaySolo(): void;
   onMultiplayer(): void;
   onSettings(): void;
+  onHowTo(): void;
   /** Panda or weapon changed: update the 3D preview. */
   onPreview(): void;
   /** Map choice changed: show that map behind the menu. */
@@ -65,6 +66,7 @@ export class Menu {
           <button class="btn primary big story" data-act="story">Story</button>
           <button class="btn primary big" data-act="solo">Play solo</button>
           <button class="btn" data-act="multi">Multiplayer</button>
+          <button class="btn ghost" data-act="howto">How to play</button>
           <button class="btn ghost" data-act="settings">Settings</button>
         </div>
         <p class="hint small" data-ref="toast"></p>
@@ -106,6 +108,9 @@ export class Menu {
           break;
         case 'settings':
           h.onSettings();
+          break;
+        case 'howto':
+          h.onHowTo();
           break;
         case 'prev':
           this.cycleVariant(-1);

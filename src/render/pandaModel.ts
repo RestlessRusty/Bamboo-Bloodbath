@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { SURVIVOR } from '../config';
 import { clamp, damp, lerp } from '../core/math';
 import type { PandaVariant, WeaponType } from '../sim/types';
-import { addOutline, toon } from './toon';
+import { addOutline, sharedGeometry, toon } from './toon';
 import { buildWeapon, HOLD_ANGLE } from './weaponModels';
 
 interface Palette {
@@ -61,11 +61,11 @@ interface PandaGeos {
 let geoCache: PandaGeos | null = null;
 const geos = (): PandaGeos =>
   (geoCache ??= {
-    sphere: new THREE.SphereGeometry(1, 20, 14),
-    band: new THREE.SphereGeometry(1, 20, 6, 0, Math.PI * 2, 0.62, 0.42),
-    arm: new THREE.CapsuleGeometry(0.11, 0.2, 4, 10),
-    leg: new THREE.CapsuleGeometry(0.13, 0.12, 4, 10),
-    smile: new THREE.TorusGeometry(0.04, 0.01, 4, 12, Math.PI),
+    sphere: sharedGeometry(new THREE.SphereGeometry(1, 20, 14)),
+    band: sharedGeometry(new THREE.SphereGeometry(1, 20, 6, 0, Math.PI * 2, 0.62, 0.42)),
+    arm: sharedGeometry(new THREE.CapsuleGeometry(0.11, 0.2, 4, 10)),
+    leg: sharedGeometry(new THREE.CapsuleGeometry(0.13, 0.12, 4, 10)),
+    smile: sharedGeometry(new THREE.TorusGeometry(0.04, 0.01, 4, 12, Math.PI)),
   });
 
 const easeOut = (u: number) => 1 - (1 - u) * (1 - u);

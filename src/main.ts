@@ -21,6 +21,7 @@ import type { Card } from './sim/story/types';
 import { PANDA_VARIANTS, WEAPON_TYPES, type PlayerSpec, type Snapshot } from './sim/types';
 import { completeChapter, loadProgress } from './storyProgress';
 import { el, formatTime } from './ui/dom';
+import { HowToPlay } from './ui/HowToPlay';
 import { Hud, type EndMode } from './ui/Hud';
 import { Lobby } from './ui/Lobby';
 import { Menu } from './ui/Menu';
@@ -85,6 +86,7 @@ input.setScheme(settings.controls);
 input.setFlipTilt(settings.flipTilt);
 
 const settingsPanel = new SettingsPanel(uiEl, settings, onSettingChanged, () => input.calibrateTilt());
+const howToPlay = new HowToPlay(uiEl, settings);
 
 const hud = new Hud(uiEl, {
   onPause: () => setPaused(true),
@@ -115,6 +117,7 @@ const menu = new Menu(uiEl, settings, {
     lobby.showChoose();
   },
   onSettings: () => settingsPanel.open(),
+  onHowTo: () => howToPlay.open(),
   onPreview: () => renderer.setShowcase(settings.variant, settings.weapon),
   onMapPreview: () => showMenuMap(),
   onChange: () => saveSettings(settings),

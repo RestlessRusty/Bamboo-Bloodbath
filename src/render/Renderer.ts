@@ -51,6 +51,8 @@ export class Renderer {
   private spinVel = 0;
   private spinPending = 0;
   private spinSway = 1;
+  /** Idle sway phase; it pauses (rather than fading) while the panda is being spun. */
+  private swayT = 0;
   private spinDrag: { id: number; x: number } | null = null;
   private time = 0;
   private readonly raycaster = new THREE.Raycaster();
@@ -93,27 +95,32 @@ export class Renderer {
   /** Drag on the 3D view (or a modal's backdrop) to spin the showcase panda. */
   private bindShowcaseDrag(): void {
     const canvas = this.gl.domElement;
-    canvas.style.touchAction = 'none';
     window.addEventListener('pointerdown', (e) => {
-      if (!this.showcase || this.spinDrag) return;
+      if (!this.showcase || this.spinDrag || e.button !== 0) return;
       const t = e.target as Element;
       if (t !== canvas && !t.classList?.contains('modal')) return;
       this.spinDrag = { id: e.pointerId, x: e.clientX };
-      canvas.style.cursor = 'grabbing';
+      document.body.classList.add('spinning');
     });
     window.addEventListener('pointermove', (e) => {
       const d = this.spinDrag;
       if (!d || e.pointerId !== d.id) return;
+      // The button-up can go missing (context menu, alt-tab): a move with nothing held ends the drag.
+      if (e.buttons === 0) return this.endSpinDrag();
       this.spinPending += (e.clientX - d.x) * 0.012;
       d.x = e.clientX;
     });
     const end = (e: PointerEvent) => {
-      if (!this.spinDrag || e.pointerId !== this.spinDrag.id) return;
-      this.spinDrag = null;
-      canvas.style.cursor = this.showcase ? 'grab' : '';
+      if (this.spinDrag && e.pointerId === this.spinDrag.id) this.endSpinDrag();
     };
     window.addEventListener('pointerup', end);
     window.addEventListener('pointercancel', end);
+    window.addEventListener('blur', () => this.endSpinDrag());
+  }
+
+  private endSpinDrag(): void {
+    this.spinDrag = null;
+    document.body.classList.remove('spinning');
   }
 
   get currentMap(): GameMap {
@@ -396,13 +403,14 @@ export class Renderer {
 
   // ------------------------------------------------------------ menu showcase
 
+  /** Swaps the model only: an ongoing drag or coasting spin carries over to the new panda. */
   setShowcase(variant: PandaVariant, weapon: WeaponType): void {
-    this.clearShowcase();
+    if (this.showcase) this.scene.remove(this.showcase.root);
     const m = new PandaModel(variant, weapon);
     this.placeShowcase(m);
     this.scene.add(m.root);
     this.showcase = m;
-    if (!this.spinDrag) this.gl.domElement.style.cursor = 'grab';
+    document.body.classList.add('showcase');
   }
 
   private placeShowcase(m: PandaModel): void {
@@ -413,10 +421,10 @@ export class Renderer {
   clearShowcase(): void {
     if (this.showcase) this.scene.remove(this.showcase.root);
     this.showcase = null;
-    this.spinDrag = null;
+    this.endSpinDrag();
     this.spinVel = 0;
     this.spinPending = 0;
-    this.gl.domElement.style.cursor = '';
+    document.body.classList.remove('showcase');
   }
 
   updateShowcase(dt: number): void {
@@ -430,9 +438,10 @@ export class Renderer {
     const p = m.root.position;
     this.snow?.update(dt, this.time, p.x, p.y, p.z);
     // While dragged the panda follows the pointer; let go and it coasts to a stop.
+    // Movement that arrived after the button-up still counts.
+    this.spin += this.spinPending;
     if (this.spinDrag) {
       if (dt > 0) this.spinVel = lerp(this.spinVel, this.spinPending / dt, damp(15, dt));
-      this.spin += this.spinPending;
     } else {
       this.spin += this.spinVel * dt;
       this.spinVel *= Math.exp(-3 * dt);
@@ -440,7 +449,8 @@ export class Renderer {
     this.spinPending = 0;
     const settled = !this.spinDrag && Math.abs(this.spinVel) < 0.3;
     this.spinSway = lerp(this.spinSway, settled ? 1 : 0, damp(3, dt));
-    m.root.rotation.y = yaw + this.spin + Math.sin(this.time * 0.6) * 0.5 * this.spinSway;
+    this.swayT += dt * this.spinSway;
+    m.root.rotation.y = yaw + this.spin + Math.sin(this.swayT * 0.6) * 0.5;
     const cycle = this.time % 4;
     m.update(dt, { speed: 0, attackT: cycle > 3 && cycle < 3.6 ? (cycle - 3) / 0.6 : -1, dashing: false, downed: false, hurt: 0 });
 
