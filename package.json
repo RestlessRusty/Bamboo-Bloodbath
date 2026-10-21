@@ -12,6 +12,7 @@
   "dependencies": {
     "@dimforge/rapier3d-compat": "0.14.0",
     "peerjs": "1.5.4",
+    "qrcode-generator": "1.4.4",
     "three": "0.169.0"
   },
   "devDependencies": {

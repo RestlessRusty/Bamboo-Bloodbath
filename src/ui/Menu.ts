@@ -10,6 +10,8 @@ export interface MenuHandlers {
   onStory(): void;
   onQuickPlay(): void;
   onMultiplayer(): void;
+  /** "Join XXXX" from an invite link. */
+  onInvite(code: string): void;
   onSettings(): void;
   onHowTo(): void;
   /** Panda or weapon changed: update the 3D preview. */
@@ -21,6 +23,7 @@ export interface MenuHandlers {
 /** Main menu: who you are (name, panda, weapon) and the three ways to play. */
 export class Menu {
   private readonly el: HTMLDivElement;
+  private invite: string | null = null;
 
   constructor(
     parent: HTMLElement,
@@ -69,6 +72,7 @@ export class Menu {
             <span class="mode-head">Together</span>
             <div class="mode-row">
               <button class="btn primary big" data-act="multi">Multiplayer</button>
+              <button class="btn primary big invite-btn" data-act="invite" data-ref="invite" hidden></button>
             </div>
           </div>
         </div>
@@ -99,6 +103,9 @@ export class Menu {
           break;
         case 'multi':
           h.onMultiplayer();
+          break;
+        case 'invite':
+          if (this.invite) h.onInvite(this.invite);
           break;
         case 'settings':
           h.onSettings();
@@ -132,6 +139,17 @@ export class Menu {
 
   hide(): void {
     this.el.hidden = true;
+  }
+
+  /**
+   * Room code from an invite link, or a room we dropped out of (`rejoin`): adds a "Join XXXX" /
+   * "Rejoin XXXX" button next to Multiplayer (null removes it).
+   */
+  setInvite(code: string | null, rejoin = false): void {
+    this.invite = code;
+    const b = this.ref('invite');
+    b.textContent = code ? `${rejoin ? 'Rejoin' : 'Join'} ${code}` : '';
+    b.hidden = !code;
   }
 
   private cycleVariant(dir: number): void {

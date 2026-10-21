@@ -6,9 +6,11 @@ import { cyclePick, hutDirection, isMapRef, isValidPick, loadMap, previewMap, re
 import { RemoteGame } from './game/RemoteGame';
 import type { GameContext, Session } from './game/Session';
 import { InputManager, requestTiltPermission } from './input/InputManager';
+import { takeInviteFromUrl } from './net/invite';
 import { NetClient } from './net/NetClient';
 import { NetHost } from './net/NetHost';
 import type { LobbyPlayer } from './net/protocol';
+import { forgetRoom, markInRoom, ownRoomCode, rejoinableRoom, seatFor } from './net/rooms';
 import { Renderer } from './render/Renderer';
 import { addResult } from './records';
 import { loadSettings, saveSettings } from './settings';
@@ -148,6 +150,13 @@ const menu = new Menu(uiEl, settings, {
     menu.hide();
     lobby.showChoose();
   },
+  onInvite: (code) => {
+    unlockAudio();
+    menu.setInvite(null);
+    menu.hide();
+    lobby.prefillCode(code);
+    void joinRoom(code);
+  },
   onSettings: () => settingsPanel.open(),
   onHowTo: () => howToPlay.open(),
   onPreview: () => renderer.setShowcase(settings.variant, settings.weapon),
@@ -203,6 +212,12 @@ const ctx: GameContext = { renderer, input, hud, sfx, settings, story: storyHud 
 
 renderer.setShowcase(settings.variant, settings.weapon);
 updateCornerButtons();
+// Opened from an invite link: offer "Join XXXX" in the menu (after picking a name and panda); else
+// "Rejoin XXXX" when the game was closed or the connection lost during a room in the last minutes.
+const invited = takeInviteFromUrl();
+const rejoin = invited ? null : rejoinableRoom();
+menu.setInvite(invited ?? rejoin, rejoin !== null);
+lobby.setOwnCode(ownRoomCode());
 
 // ------------------------------------------------------------------ helpers
 
@@ -507,8 +522,12 @@ function setPaused(on: boolean): void {
   input.setEnabled(!on);
 }
 
-function leaveToMenu(message = ''): void {
+/** `keepRejoin`: we lost a room rather than leaving it, so the menu offers to rejoin it. */
+function leaveToMenu(message = '', keepRejoin = false): void {
   netToken++;
+  const room = client?.code ?? rejoinableRoom();
+  if (keepRejoin && room) menu.setInvite(room, true);
+  else if (client || mode === 'guest') forgetRoom();
   clearSession();
   cards.cancel();
   storyMenu.hide();
@@ -538,7 +557,16 @@ function showRoom(): void {
     lobby.showRoom({ code: h.code, players: h.players, bots: h.bots, mapPick: h.mapPick, difficulty: h.difficulty, isHost: true, myId: 'p1' });
   } else if (client) {
     const c = client;
-    lobby.showRoom({ code: c.code, players: c.players, bots: c.bots, mapPick: c.mapPick, difficulty: c.difficulty, isHost: false, myId: c.myId });
+    lobby.showRoom({
+      code: c.code,
+      players: c.players,
+      bots: c.bots,
+      mapPick: c.mapPick,
+      difficulty: c.difficulty,
+      isHost: false,
+      myId: c.myId,
+      waiting: c.playing,
+    });
   }
 }
 
@@ -546,7 +574,7 @@ async function createRoom(): Promise<void> {
   const token = ++netToken;
   lobby.showBusy('Creating room…');
   try {
-    const h = await NetHost.create(profile(), settings.map, settings.difficulty);
+    const h = await NetHost.create(profile(), settings.map, settings.difficulty, ownRoomCode());
     if (token !== netToken) {
       h.close();
       return;
@@ -558,10 +586,8 @@ async function createRoom(): Promise<void> {
     h.onEndRequest = () => {
       if (session instanceof LocalGame) session.requestEnd();
     };
-    h.onPlayerLeft = (id) => {
-      if (session instanceof LocalGame) session.convertToBot(id);
-      const name = h.players.find((p) => p.id === id)?.name ?? 'A player';
-      hud.flash(`${name} left. A bot takes over their panda.`);
+    h.onNotice = (text) => {
+      if (session) hud.flash(text);
     };
     showRoom();
   } catch (err) {
@@ -575,38 +601,81 @@ async function joinRoom(code: string): Promise<void> {
   const token = ++netToken;
   lobby.showBusy(`Joining room ${code}…`);
   try {
-    const c = await NetClient.join(code, profile());
+    const c = await NetClient.join(code, profile(), seatFor(code));
     if (token !== netToken) {
       c.close();
       return;
     }
-    client = c;
-    c.onLobby = () => {
-      if (session) {
-        // The host went back to the lobby after a match.
-        clearSession();
-        hud.hide();
-        input.setEnabled(false);
-        renderer.setShowcase(settings.variant, settings.weapon);
-      }
-      showRoom();
-    };
-    c.onStart = (specs, mapRef, difficulty) => {
-      mode = 'guest';
-      localId = c.myId;
-      // Same protocol version means the same maps, so this fallback should never be needed.
-      const ref = isMapRef(mapRef) ? mapRef : refOf(DEFAULT_MAP);
-      match = { mapId: ref.id, difficulty, bots: specs.filter((s) => s.bot).length };
-      enterGame(ref, () => new RemoteGame(ctx, specs, c.myId, onGameEnd, c));
-    };
-    c.onSnapshot = (snap) => {
-      if (session instanceof RemoteGame) session.receive(snap);
-    };
-    c.onClosed = (reason) => leaveToMenu(reason);
+    useClient(c);
     showRoom();
   } catch (err) {
-    if (token === netToken) lobby.showChoose(errorText(err));
+    if (token !== netToken) return;
+    forgetRoom();
+    lobby.showChoose(errorText(err));
   }
+}
+
+/** Seconds a guest keeps trying to get back into a match after the connection drops. */
+const RECONNECT_MS = 45000;
+
+/** The connection dropped mid-match: keep trying to get back in (meanwhile a bot plays our panda). */
+async function reconnect(code: string): Promise<void> {
+  const token = ++netToken;
+  client = null;
+  hud.flash('Connection lost. Reconnecting…', RECONNECT_MS);
+  const until = performance.now() + RECONNECT_MS;
+  while (token === netToken && performance.now() < until) {
+    try {
+      const c = await NetClient.join(code, profile(), seatFor(code));
+      if (token !== netToken) {
+        c.close();
+        return;
+      }
+      // The host answers with the match (our panda back), or the room if the match just ended.
+      useClient(c);
+      return;
+    } catch {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    }
+  }
+  if (token === netToken) leaveToMenu('Lost connection to the host.', true);
+}
+
+/** Hooks up a guest's connection (a fresh join or a reconnect). */
+function useClient(c: NetClient): void {
+  client = c;
+  markInRoom(c.code);
+  c.onLobby = () => {
+    if (session) {
+      // The host went back to the lobby after a match (or we came back after it ended).
+      clearSession();
+      hud.hide();
+      input.setEnabled(false);
+      releaseWakeLock();
+      renderer.setShowcase(settings.variant, settings.weapon);
+    }
+    showRoom();
+  };
+  c.onStart = (specs, mapRef, difficulty, you) => {
+    mode = 'guest';
+    localId = you ?? c.myId;
+    markInRoom(c.code);
+    // Same protocol version means the same maps, so this fallback should never be needed.
+    const ref = isMapRef(mapRef) ? mapRef : refOf(DEFAULT_MAP);
+    match = { mapId: ref.id, difficulty, bots: specs.filter((s) => s.bot).length };
+    enterGame(ref, () => new RemoteGame(ctx, specs, localId, onGameEnd, c), you ? 'Jumping into the match!' : undefined);
+  };
+  c.onSpecs = (specs) => {
+    if (session instanceof RemoteGame) session.updateSpecs(specs);
+  };
+  c.onSnapshot = (snap) => {
+    if (session instanceof RemoteGame) session.receive(snap);
+  };
+  c.onClosed = (reason, retry) => {
+    if (client !== c) return;
+    if (retry && session instanceof RemoteGame && !session.isOver) void reconnect(c.code);
+    else leaveToMenu(reason, retry);
+  };
 }
 
 async function hostStart(): Promise<void> {
@@ -624,7 +693,11 @@ async function hostStart(): Promise<void> {
   const difficulty = h.difficulty;
   h.start(specs, mapRef);
   match = { mapId: mapRef.id, difficulty, bots: h.bots };
-  enterGame(mapRef, () => new LocalGame(ctx, specs, localId, onGameEnd, h, { difficulty }));
+  enterGame(mapRef, () => {
+    const game = new LocalGame(ctx, specs, localId, onGameEnd, h, { difficulty });
+    h.game = game; // for guests leaving, coming back or dropping in mid-match
+    return game;
+  });
 }
 
 function hostBackToLobby(): void {

@@ -111,9 +111,22 @@ buddies. Finishing a chapter unlocks the next (saved on the device).
 Menu → **Multiplayer** → **Create room** shows a 4-letter code. Friends tap **Multiplayer**, type
 the code, **Join**. The host can add bots to fill up to 4 pandas and presses **Start**.
 
+Each device has its **own room code**, made once and kept, so every room it creates gets the same
+code (a random one only if that's busy, e.g. right after a reload) and friends can keep the link.
+
+Beside the room code: **Copy** (the code), **Share** (the phone's share sheet, or the clipboard, with
+a `?room=CODE` link that opens the game with a red **Join CODE** button next to Multiplayer, so the
+friend can still pick a name and panda first) and **QR** (the same link as a QR code to scan with the
+camera).
+
 - Peer-to-peer: the host's phone runs the game and sends it to the others ~20×/s; guests send their
   controls. The free public PeerJS server is only used to introduce the phones to each other.
-- If a guest leaves mid-match, a bot takes over their panda. If the host leaves, the room closes.
+- If a guest leaves mid-match, a bot takes over their panda until they're back. A guest whose
+  connection drops keeps reconnecting for 45 s on their own; after that (or if the game was closed),
+  the menu shows **Rejoin CODE** for 15 minutes. The host recognises them by a seat ticket saved on
+  their device and hands their panda back. If the host leaves, the room closes.
+- **Join mid-match:** someone joining a running match takes over a bot buddy's panda (with their
+  name). With no bot free (or the match ending), they wait in the room and play the next match.
 - Multiplayer can't be paused, and the host should keep the game in the foreground.
 - Most connections work on Wi-Fi and mobile data; some strict mobile networks may block direct
   connections (PeerJS falls back to its public relay servers where it can).

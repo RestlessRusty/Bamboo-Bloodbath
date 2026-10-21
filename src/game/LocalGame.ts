@@ -20,6 +20,8 @@ export class LocalGame implements Session {
   private readonly presenter: Presenter;
   private readonly inputs = new Map<string, PlayerInput>();
   private readonly remoteIds: string[];
+  /** The team as it is now (pandas change hands when guests leave, rejoin or drop in). */
+  private readonly specs: PlayerSpec[];
   private prev: Snapshot;
   private curr: Snapshot;
   private acc = 0;
@@ -37,6 +39,7 @@ export class LocalGame implements Session {
   ) {
     this.sim = new Simulation(ctx.renderer.currentMap, specs, options);
     this.presenter = new Presenter(ctx, specs, localId);
+    this.specs = specs.map((s) => ({ ...s }));
     this.remoteIds = specs.filter((s) => !s.bot && s.id !== localId).map((s) => s.id);
     this.curr = this.sim.snapshot();
     this.prev = this.curr;
@@ -52,11 +55,35 @@ export class LocalGame implements Session {
     return this.link === null;
   }
 
-  /** A guest left mid-match: their panda keeps going on autopilot. */
-  convertToBot(id: string): void {
-    this.sim.setBot(id, true);
-    const i = this.remoteIds.indexOf(id);
-    if (i >= 0) this.remoteIds.splice(i, 1);
+  /**
+   * A panda changes hands mid-match: a guest left (`bot` true, it keeps going on autopilot), came back,
+   * or a newcomer took over a bot (`bot` false, with their name).
+   */
+  setSpec(spec: PlayerSpec): void {
+    const i = this.specs.findIndex((s) => s.id === spec.id);
+    if (i < 0) return;
+    this.specs[i] = { ...spec };
+    this.sim.setBot(spec.id, spec.bot, spec.name);
+    const r = this.remoteIds.indexOf(spec.id);
+    if (spec.bot && r >= 0) this.remoteIds.splice(r, 1);
+    if (!spec.bot && r < 0 && spec.id !== this.localId) this.remoteIds.push(spec.id);
+    this.presenter.setSpecs(this.specs);
+    this.ctx.renderer.updateSpecs(this.specs, this.localId);
+    this.ctx.hud.setTeam(this.specs, this.localId);
+  }
+
+  /** A bot buddy's panda still in the game, for a player joining mid-match (a standing one if possible). */
+  freeBotSeat(): string | null {
+    if (this.ended) return null;
+    let downed: string | null = null;
+    for (const s of this.curr.survivors) {
+      const spec = this.specs.find((x) => x.id === s.id);
+      // Only real bot buddies: a guest who dropped out keeps their panda for when they're back.
+      if (!spec?.bot || spec.npc || !spec.id.startsWith('b')) continue;
+      if (s.state === 'active') return s.id;
+      if (s.state === 'downed') downed ??= s.id;
+    }
+    return downed;
   }
 
   /** Also called for a guest's request: the simulation checks it's still allowed. */

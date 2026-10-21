@@ -1297,6 +1297,48 @@ small {
   user-select: text;
   -webkit-user-select: text;
 }
+/* Room code with Copy / Share / QR beside it (they wrap below on a narrow column). */
+.code-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 12px;
+}
+.invite-btns {
+  display: flex;
+  gap: 6px;
+}
+.invite-note {
+  margin: 0 !important;
+  font-size: 13px !important;
+  font-weight: 700;
+  color: var(--green-dark);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.qr-card {
+  align-items: center;
+  width: auto;
+}
+.qr-code-text {
+  color: var(--blood);
+  letter-spacing: 3px;
+}
+.qr-canvas {
+  display: block;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  image-rendering: pixelated;
+}
+.qr-card .hint {
+  max-width: 300px;
+}
+/* Main menu "Join XXXX" from an invite link: stands out next to Multiplayer. */
+.btn.primary.invite-btn {
+  background: var(--blood);
+}
 .player-list {
   list-style: none;
   margin: 0;

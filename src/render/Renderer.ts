@@ -23,6 +23,10 @@ interface SurvivorView {
   ripple: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
 }
 
+/** Name tag colour: you yellow, story characters pink, bots blue, other players white. */
+const tagColor = (spec: PlayerSpec, localId: string) =>
+  spec.id === localId ? '#ffe066' : spec.npc ? '#ffc2c2' : spec.bot ? '#cfe9ff' : '#ffffff';
+
 export class Renderer {
   readonly effects: Effects;
   private readonly gl: THREE.WebGLRenderer;
@@ -202,7 +206,7 @@ export class Renderer {
     this.specs = new Map(specs.map((s) => [s.id, s]));
     for (const spec of specs) {
       const model = new PandaModel(spec.variant, spec.weapon);
-      const tag = new NameTag(spec.name, spec.id === localId ? '#ffe066' : spec.npc ? '#ffc2c2' : spec.bot ? '#cfe9ff' : '#ffffff');
+      const tag = new NameTag(spec.name, tagColor(spec, localId));
       const ripple = new THREE.Mesh(
         RIPPLE_GEO,
         new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false }),
@@ -212,6 +216,20 @@ export class Renderer {
       this.views.set(spec.id, { model, tag, ripple });
     }
     this.snapCamera = true;
+  }
+
+  /** Mid-match team change (someone took over a bot, or left): new name tags where name or bot flag changed. */
+  updateSpecs(specs: readonly PlayerSpec[], localId: string): void {
+    for (const spec of specs) {
+      const old = this.specs.get(spec.id);
+      const v = this.views.get(spec.id);
+      if (!v || (old && old.name === spec.name && old.bot === spec.bot)) continue;
+      this.scene.remove(v.tag.sprite);
+      v.tag.dispose();
+      v.tag = new NameTag(spec.name, tagColor(spec, localId));
+      this.scene.add(v.tag.sprite);
+    }
+    this.specs = new Map(specs.map((s) => [s.id, s]));
   }
 
   clearPlayers(): void {

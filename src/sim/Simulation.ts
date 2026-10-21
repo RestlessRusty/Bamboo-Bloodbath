@@ -318,11 +318,14 @@ export class Simulation implements BotWorld, MissionHost {
     return this.mission?.guard() ?? null;
   }
 
-  /** Hand a player's panda to (or back from) the bot AI, e.g. when someone disconnects. */
-  setBot(id: string, bot: boolean): void {
+  /**
+   * Hand a player's panda to (or back from) the bot AI, e.g. when someone disconnects, rejoins, or
+   * takes over a bot mid-match (`name`: the panda's new name).
+   */
+  setBot(id: string, bot: boolean, name?: string): void {
     const s = this.survivors.find((x) => x.spec.id === id);
     if (!s) return;
-    s.spec = { ...s.spec, bot };
+    s.spec = { ...s.spec, bot, name: name ?? s.spec.name };
     s.brain = bot ? new BotBrain(this.survivors.indexOf(s)) : null;
   }
 

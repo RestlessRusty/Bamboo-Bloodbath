@@ -42,6 +42,13 @@ export class RemoteGame implements Session {
     return this.ended;
   }
 
+  /** The host says pandas changed hands (someone left, came back, or took over a bot). */
+  updateSpecs(specs: readonly PlayerSpec[]): void {
+    this.presenter.setSpecs(specs);
+    this.ctx.renderer.updateSpecs(specs, this.localId);
+    this.ctx.hud.setTeam(specs, this.localId);
+  }
+
   /** The host checks it and ends the match for everyone. */
   requestEnd(): void {
     if (!this.ended) this.link.requestEnd();

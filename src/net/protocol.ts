@@ -5,7 +5,7 @@ import { PANDA_VARIANTS, WEAPON_TYPES, type PandaVariant, type PlayerInput, type
 import type { EncodedSnapshot } from './codec';
 
 /** Bump when messages change so old and new versions refuse to mix. */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /** Room code "K7QX" becomes PeerJS id "bamboo-bloodbath-v1-K7QX" for the host. */
 export const PEER_PREFIX = 'bamboo-bloodbath-v1-';
@@ -18,6 +18,10 @@ export function makeRoomCode(): string {
   let code = '';
   for (let i = 0; i < CODE_LENGTH; i++) code += ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
   return code;
+}
+
+export function isRoomCode(raw: unknown): raw is string {
+  return typeof raw === 'string' && raw.length === CODE_LENGTH && [...raw].every((c) => ALPHABET.includes(c));
 }
 
 export function normalizeCode(raw: string): string {
@@ -35,7 +39,8 @@ export interface LobbyPlayer {
 }
 
 export type ClientMsg =
-  | { t: 'hello'; v: number; name: string; variant: PandaVariant; weapon: WeaponType }
+  /** `seat`: this device's ticket for the room, so a guest who drops out gets their panda back. */
+  | { t: 'hello'; v: number; name: string; variant: PandaVariant; weapon: WeaponType; seat: string }
   | { t: 'input'; i: number[] }
   /** "End match": every human is done, stop waiting for the bots (the host checks). */
   | { t: 'end' };
@@ -43,10 +48,15 @@ export type ClientMsg =
 export type HostMsg =
   | { t: 'welcome'; id: string }
   | { t: 'reject'; reason: string }
-  /** `map` is the host's pick (a map id or "random"). */
-  | { t: 'lobby'; players: LobbyPlayer[]; bots: number; map: string; difficulty: Difficulty }
-  /** `map` is the concrete map everyone builds for this match. */
-  | { t: 'start'; specs: PlayerSpec[]; map: MapRef; difficulty: Difficulty }
+  /** `map` is the host's pick (a map id or "random"); `playing`: a match is on, you're in the next one. */
+  | { t: 'lobby'; players: LobbyPlayer[]; bots: number; map: string; difficulty: Difficulty; playing?: boolean }
+  /**
+   * `map` is the concrete map everyone builds for this match. `you`: joining a match already running,
+   * the panda you play (your own when you're back, or a bot's you take over).
+   */
+  | { t: 'start'; specs: PlayerSpec[]; map: MapRef; difficulty: Difficulty; you?: string }
+  /** Mid-match: pandas changed hands (names and bot flags). */
+  | { t: 'specs'; specs: PlayerSpec[] }
   | { t: 'snap'; s: EncodedSnapshot }
   | { t: 'bye'; reason: string };
 

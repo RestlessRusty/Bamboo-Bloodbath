@@ -13,11 +13,19 @@ export class NetClient {
   mapPick = '';
   /** The host's difficulty (sanitized). */
   difficulty: Difficulty = 'normal';
+  /** The host is in a match we're not part of: we play the next one. */
+  playing = false;
   onLobby: (() => void) | null = null;
-  /** `map` is unvalidated wire data (should be a MapRef). */
-  onStart: ((specs: PlayerSpec[], map: unknown, difficulty: Difficulty) => void) | null = null;
+  /**
+   * `map` is unvalidated wire data (should be a MapRef). `you`: the panda we play when joining a match
+   * already running (null at a normal start: our own id).
+   */
+  onStart: ((specs: PlayerSpec[], map: unknown, difficulty: Difficulty, you: string | null) => void) | null = null;
+  /** Mid-match: pandas changed hands. */
+  onSpecs: ((specs: PlayerSpec[]) => void) | null = null;
   onSnapshot: ((snap: Snapshot) => void) | null = null;
-  onClosed: ((reason: string) => void) | null = null;
+  /** `retry`: the connection dropped (worth reconnecting), rather than the host closing the room. */
+  onClosed: ((reason: string, retry: boolean) => void) | null = null;
   private closed = false;
 
   private constructor(
@@ -27,14 +35,15 @@ export class NetClient {
     readonly code: string,
   ) {
     conn.on('data', (data) => this.onData(data as HostMsg));
-    conn.on('close', () => this.lost('Lost connection to the host.'));
-    conn.on('error', () => this.lost('Lost connection to the host.'));
+    conn.on('close', () => this.lost('Lost connection to the host.', true));
+    conn.on('error', () => this.lost('Lost connection to the host.', true));
     peer.on('disconnected', () => {
       if (!peer.destroyed) peer.reconnect();
     });
   }
 
-  static async join(code: string, me: Omit<LobbyPlayer, 'id'>): Promise<NetClient> {
+  /** `seat`: this device's ticket for the room (see rooms.ts). */
+  static async join(code: string, me: Omit<LobbyPlayer, 'id'>, seat: string): Promise<NetClient> {
     const peer = await openPeer();
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -54,7 +63,7 @@ export class NetClient {
         else if (!settled) fail(`Connection problem (${type || 'unknown'}).`);
       });
       conn.on('open', () => {
-        conn.send({ t: 'hello', v: PROTOCOL_VERSION, name: me.name, variant: me.variant, weapon: me.weapon });
+        conn.send({ t: 'hello', v: PROTOCOL_VERSION, name: me.name, variant: me.variant, weapon: me.weapon, seat });
       });
       conn.on('data', (data) => {
         if (settled) return;
@@ -103,29 +112,35 @@ export class NetClient {
         this.bots = typeof msg.bots === 'number' ? msg.bots : 0;
         this.mapPick = typeof msg.map === 'string' ? msg.map : '';
         this.difficulty = sanitizeDifficulty(msg.difficulty);
+        this.playing = msg.playing === true;
         this.onLobby?.();
         break;
       case 'start':
         if (Array.isArray(msg.specs)) {
           this.difficulty = sanitizeDifficulty(msg.difficulty);
-          this.onStart?.(msg.specs, msg.map, this.difficulty);
+          this.playing = false;
+          const you = typeof msg.you === 'string' && msg.specs.some((s) => s?.id === msg.you) ? msg.you : null;
+          this.onStart?.(msg.specs, msg.map, this.difficulty, you);
         }
+        break;
+      case 'specs':
+        if (Array.isArray(msg.specs)) this.onSpecs?.(msg.specs);
         break;
       case 'snap':
         this.onSnapshot?.(decodeSnapshot(msg.s));
         break;
       case 'bye':
-        this.lost(msg.reason || 'The host left.');
+        this.lost(msg.reason || 'The host left.', false);
         break;
       default:
         break;
     }
   }
 
-  private lost(reason: string): void {
+  private lost(reason: string, retry: boolean): void {
     if (this.closed) return;
     this.closed = true;
     this.peer.destroy();
-    this.onClosed?.(reason);
+    this.onClosed?.(reason, retry);
   }
 }

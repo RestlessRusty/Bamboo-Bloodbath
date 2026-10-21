@@ -18,13 +18,18 @@ export interface PresentContext {
 
 /** Turns simulation events into sounds, particles, screen shake, vibration and HUD messages. */
 export class Presenter {
-  private readonly names: Map<string, string>;
+  private names: Map<string, string>;
 
   constructor(
     private readonly ctx: PresentContext,
     specs: readonly PlayerSpec[],
     private readonly localId: string,
   ) {
+    this.names = new Map(specs.map((s) => [s.id, s.name]));
+  }
+
+  /** Mid-match team change: someone took over a bot's panda. */
+  setSpecs(specs: readonly PlayerSpec[]): void {
     this.names = new Map(specs.map((s) => [s.id, s.name]));
   }
 
