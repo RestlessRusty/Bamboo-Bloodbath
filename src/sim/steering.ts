@@ -20,6 +20,19 @@ export class Obstacles {
     this.maxR = Math.max(this.maxR, c.r);
   }
 
+  /**
+   * Takes one out again: the same object that was added (e.g. a demolished building piece).
+   * The reach of queries stays as wide as before, which is only a little extra work.
+   */
+  remove(c: Circle): void {
+    const k = this.key(Math.floor(c.x / CELL), Math.floor(c.z / CELL));
+    const cell = this.cells.get(k);
+    if (!cell) return;
+    const i = cell.indexOf(c);
+    if (i >= 0) cell.splice(i, 1);
+    if (cell.length === 0) this.cells.delete(k);
+  }
+
   /** Obstacles whose edge is within `r` of (x, z). Reuses `out`. */
   near(x: number, z: number, r: number, out: Circle[]): Circle[] {
     out.length = 0;

@@ -1,9 +1,22 @@
 import type { DataConnection, Peer } from 'peerjs';
 import type { Difficulty } from '../config';
+import type { OpenCommand, RoomMode, WorldJoin } from '../sim/open/types';
 import type { PlayerInput, PlayerSpec, Snapshot } from '../sim/types';
 import { decodeSnapshot } from './codec';
 import { openPeer, peerErrorType } from './peer';
-import { encodeInput, PEER_PREFIX, PROTOCOL_VERSION, sanitizeDifficulty, type HostMsg, type LobbyPlayer } from './protocol';
+import {
+  encodeInput,
+  PEER_PREFIX,
+  PROTOCOL_VERSION,
+  sanitizeDifficulty,
+  sanitizeJoin,
+  sanitizeMode,
+  sanitizeRoomWorld,
+  type ClientMsg,
+  type HostMsg,
+  type LobbyPlayer,
+  type RoomWorld,
+} from './protocol';
 
 /** A guest's connection to the host's room. */
 export class NetClient {
@@ -13,14 +26,20 @@ export class NetClient {
   mapPick = '';
   /** The host's difficulty (sanitized). */
   difficulty: Difficulty = 'normal';
+  /** Quick play matches, or an infinite-mode world (sanitized). */
+  mode: RoomMode = 'quick';
+  /** Infinite mode: the world the room plays (sanitized; from the lobby, or from the start of a world we joined). */
+  world: RoomWorld | null = null;
   /** The host is in a match we're not part of: we play the next one. */
   playing = false;
   onLobby: (() => void) | null = null;
   /**
    * `map` is unvalidated wire data (should be a MapRef). `you`: the panda we play when joining a match
-   * already running (null at a normal start: our own id).
+   * already running (null at a normal start: our own id). `open`: an infinite-mode world as it is now
+   * (sanitized), null in a normal match.
    */
-  onStart: ((specs: PlayerSpec[], map: unknown, difficulty: Difficulty, you: string | null) => void) | null = null;
+  onStart: ((specs: PlayerSpec[], map: unknown, difficulty: Difficulty, you: string | null, open: WorldJoin | null) => void) | null =
+    null;
   /** Mid-match: pandas changed hands. */
   onSpecs: ((specs: PlayerSpec[]) => void) | null = null;
   onSnapshot: ((snap: Snapshot) => void) | null = null;
@@ -97,6 +116,16 @@ export class NetClient {
     }
   }
 
+  /** Infinite mode: build / craft (the host's rules check it and say no with a 'deny' event). */
+  sendCommand(cmd: OpenCommand): void {
+    if (this.closed || !this.conn.open) return;
+    try {
+      this.conn.send({ t: 'cmd', c: cmd } satisfies ClientMsg);
+    } catch {
+      // Channel hiccup; the player can tap again.
+    }
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -112,6 +141,8 @@ export class NetClient {
         this.bots = typeof msg.bots === 'number' ? msg.bots : 0;
         this.mapPick = typeof msg.map === 'string' ? msg.map : '';
         this.difficulty = sanitizeDifficulty(msg.difficulty);
+        this.mode = sanitizeMode(msg.mode);
+        this.world = this.mode === 'open' ? sanitizeRoomWorld(msg.world) : null;
         this.playing = msg.playing === true;
         this.onLobby?.();
         break;
@@ -120,8 +151,17 @@ export class NetClient {
           this.difficulty = sanitizeDifficulty(msg.difficulty);
           this.playing = false;
           const you = typeof msg.you === 'string' && msg.specs.some((s) => s?.id === msg.you) ? msg.you : null;
-          this.onStart?.(msg.specs, msg.map, this.difficulty, you);
+          const open = sanitizeJoin(msg.open);
+          if (open) {
+            this.mode = 'open';
+            this.world = sanitizeRoomWorld(msg.world) ?? this.world;
+          }
+          this.onStart?.(msg.specs, msg.map, this.difficulty, you, open);
         }
+        break;
+      case 'reject':
+        // After 'welcome' only when an infinite-mode world turned out to be full.
+        this.lost(msg.reason || 'The host turned us away.', false);
         break;
       case 'specs':
         if (Array.isArray(msg.specs)) this.onSpecs?.(msg.specs);

@@ -467,6 +467,15 @@ small {
   padding-left: 8px;
   padding-right: 8px;
 }
+/* Solo row with three modes: each button as wide as its label needs, sharing what's left. */
+.mode-row-fit {
+  display: flex;
+}
+.mode-row-fit .btn {
+  flex: 1 1 auto;
+  padding-left: 6px;
+  padding-right: 6px;
+}
 .menu-toast:empty {
   display: none;
 }
@@ -674,6 +683,10 @@ small {
 }
 .howto .btn {
   align-self: center;
+}
+.howto-sub {
+  margin: 4px 0 0;
+  font-size: 16px;
 }
 @media (max-width: 640px) {
   .howto-cols {
@@ -900,6 +913,10 @@ small {
 .touch-layer[data-scheme='tap'] .act-btn:not(.cracker):not(.swap) {
   display: none;
 }
+/* Infinite mode's build mode: OpenHud's Place / Rotate buttons take these spots. */
+.touch-layer.building .act-btn {
+  display: none;
+}
 
 /* ------------------------------------------------------------ HUD */
 
@@ -1080,6 +1097,27 @@ small {
 .hud-msg.show {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+/* Open world: messages and the fps counter make room for the day / pack / siege block at the top. */
+.hud.open .hud-msg {
+  top: 34%;
+}
+.hud.open .hud-fps {
+  top: auto;
+  bottom: calc(4px + var(--safe-b));
+}
+.hud-goal.siege {
+  background: #ffd6d4;
+}
+.hud-goal.siege .hud-arrow {
+  fill: var(--blood);
+}
+/* Build mode: the palette sits where the status line was. */
+body.open-building .hud-status {
+  display: none;
+}
+body.open-building .hud-revive {
+  bottom: calc(170px + var(--safe-b));
 }
 .overlay {
   position: absolute;
@@ -1427,6 +1465,13 @@ small {
 }
 .lobby .picker {
   justify-content: center;
+}
+/* Infinite room: the saved world to play instead of the map picker. */
+.world-row b {
+  font-size: 17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* Room: code and players beside the match settings when there's width for it, Start / Leave pinned below. */
 .room-card {
@@ -1785,4 +1830,587 @@ small {
 }
 .story-who.bristle {
   background: #b5532a;
+}
+
+/* ------------------------------------------------------------ infinite mode: menu */
+
+.infinite-menu {
+  width: min(460px, 52vw);
+}
+/* The slot list or the new-world form; the list scrolls if it must, the buttons stay. */
+.infinite-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+}
+.world-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.world-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border: 2px solid var(--ink);
+  border-radius: 14px;
+  padding: 5px 8px 5px 12px;
+}
+.world-card.empty {
+  background: transparent;
+  border-style: dashed;
+}
+.world-card.confirm {
+  background: #ffd6d4;
+}
+.world-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  text-align: left;
+}
+.world-name {
+  font-size: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.world-meta {
+  font-size: 12px;
+}
+.world-btns {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.icon-btn.world-del {
+  width: 34px;
+  height: 34px;
+  padding: 5px;
+  box-shadow: 0 2px 0 var(--ink);
+}
+.btn.danger {
+  background: var(--blood);
+  color: #fff;
+}
+@media (max-height: 430px) {
+  .infinite-blurb {
+    display: none;
+  }
+  .world-card {
+    padding: 3px 6px 3px 10px;
+  }
+  .world-name {
+    font-size: 15px;
+  }
+  .icon-btn.world-del {
+    width: 30px;
+    height: 30px;
+  }
+}
+
+/* ------------------------------------------------------------ infinite mode: in game */
+
+/* Below the HUD (its pause overlay covers this), above the touch layer. */
+.open-hud {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  --hud-map: clamp(80px, 22vh, 124px);
+}
+/* Day, hunger and pack, then warnings: top middle, between your health and the goal box. */
+.open-top {
+  position: absolute;
+  top: calc(10px + var(--safe-t));
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 48vw;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.open-day {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 12px 1px 5px;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  background: var(--cream);
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 0 3px 0 var(--ink);
+}
+.open-hud.night .open-day {
+  background: #3a3f63;
+  color: #fff;
+}
+.open-sky svg {
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+.open-stats {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.open-hunger {
+  position: relative;
+  flex: none;
+  width: 58px;
+  height: 20px;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  background: var(--cream);
+  overflow: hidden;
+}
+.open-hunger > div {
+  height: 100%;
+  background: #f2b82e;
+  transition: width 0.3s;
+}
+.open-hunger span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+.open-hunger.low {
+  animation: hunger-nag 0.9s ease-in-out infinite;
+}
+.open-hunger.low > div {
+  background: var(--blood);
+}
+@keyframes hunger-nag {
+  50% {
+    transform: scale(1.1);
+  }
+}
+.open-res {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.res-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  padding: 0 6px 0 3px;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: rgba(255, 248, 234, 0.92);
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+}
+.res-chip.zero b {
+  opacity: 0.45;
+}
+.res-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+/* "+2" drifting down from a chip after a gather. */
+.res-gain {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  font-style: normal;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  -webkit-text-stroke: 1px var(--ink);
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.res-chip.bump {
+  background: #e4f6d6;
+}
+.res-chip.bump .res-gain {
+  animation: gain-float 1.4s ease-out forwards;
+}
+@keyframes gain-float {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+}
+.open-stash small {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  opacity: 1;
+  color: #fff;
+  -webkit-text-stroke: 0.8px var(--ink);
+}
+.open-stash .res-chip {
+  height: 18px;
+  font-size: 12px;
+  background: #fff3b8;
+}
+.open-alert {
+  max-width: 100%;
+  padding: 1px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  background: #ffd6d4;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  box-shadow: 0 2px 0 var(--ink);
+}
+.open-alert.siege {
+  background: var(--blood);
+  color: #fff;
+  animation: siege-pulse 1s ease-in-out infinite;
+}
+@keyframes siege-pulse {
+  50% {
+    transform: scale(1.05);
+  }
+}
+.open-respawn {
+  position: absolute;
+  left: 50%;
+  bottom: calc(22% + var(--safe-b));
+  transform: translateX(-50%);
+  max-width: 80vw;
+  text-align: center;
+  font-size: clamp(16px, 4.2vh, 24px);
+  font-weight: 700;
+  color: #fff;
+  -webkit-text-stroke: 1.2px var(--ink);
+  text-shadow: 0 3px 0 var(--ink);
+}
+/* Build and Craft: beside the minimap (where quick play's "End match" goes). */
+.open-side {
+  position: absolute;
+  top: calc(62px + var(--safe-t));
+  right: calc(14px + var(--hud-map) + 10px + var(--safe-r));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.open-btn {
+  pointer-events: auto;
+  width: 46px;
+  height: 46px;
+  padding: 8px;
+  color: var(--ink);
+  background: var(--cream);
+  border: 3px solid var(--ink);
+  border-radius: 50%;
+  box-shadow: 0 3px 0 var(--ink);
+  cursor: pointer;
+}
+.open-btn.active {
+  background: #f2b82e;
+}
+.open-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--ink);
+}
+.open-btn svg,
+.open-act svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Refusals ("Too steep"), just above your panda. */
+.open-deny {
+  position: absolute;
+  left: 50%;
+  top: calc(34% + 44px);
+  max-width: 80vw;
+  padding: 2px 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--blood);
+  background: #ffe9e7;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  box-shadow: 0 2px 0 var(--ink);
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity 0.2s;
+}
+.open-deny.show {
+  opacity: 1;
+  animation: deny-shake 0.3s;
+}
+@keyframes deny-shake {
+  25% {
+    transform: translate(calc(-50% - 5px), 0);
+  }
+  75% {
+    transform: translate(calc(-50% + 5px), 0);
+  }
+}
+/* Build mode: piece info and palette bottom middle, clear of the Place button on the right. */
+.open-build {
+  position: absolute;
+  right: calc(136px + var(--safe-r));
+  bottom: calc(8px + var(--safe-b));
+  width: min(400px, calc(100vw - 300px));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 6px;
+  pointer-events: auto;
+  background: rgba(255, 248, 234, 0.94);
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 0 4px 0 var(--ink);
+}
+.build-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+}
+.build-text {
+  flex: 1 1 110px;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 6px;
+  font-size: 13px;
+  line-height: 1.15;
+}
+.build-note {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  opacity: 0.8;
+}
+.build-note.why {
+  color: var(--blood);
+  font-weight: 700;
+  opacity: 1;
+}
+.build-info .btn.small {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  font-size: 12px;
+  white-space: nowrap;
+  border-width: 2px;
+  box-shadow: 0 2px 0 var(--ink);
+}
+.build-info .btn.small.ghost {
+  box-shadow: none;
+}
+.cost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.cost-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.cost-item .res-icon {
+  width: 12px;
+  height: 12px;
+}
+.btn.poor {
+  opacity: 0.5;
+}
+.build-palette {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+.palette-btn {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 3px;
+  font: inherit;
+  color: var(--ink);
+  background: #fff;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.palette-btn b {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.palette-btn.active {
+  background: #fff3b8;
+  box-shadow: inset 0 0 0 2px #f2b82e;
+}
+.palette-btn.poor {
+  opacity: 0.45;
+}
+/* Place and Rotate: where Attack and Firecracker are outside build mode. */
+.open-act {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font: inherit;
+  color: #fff;
+  border: 4px solid var(--ink);
+  border-radius: 50%;
+  box-shadow: 0 5px 0 var(--ink);
+  cursor: pointer;
+  touch-action: none;
+}
+.open-act:active {
+  transform: translateY(4px);
+  box-shadow: 0 1px 0 var(--ink);
+}
+.open-act.place {
+  right: calc(26px + var(--safe-r));
+  bottom: calc(30px + var(--safe-b));
+  width: 96px;
+  height: 96px;
+  background: var(--green);
+}
+.open-act.place svg {
+  width: 44%;
+  height: 44%;
+}
+.open-act.place span {
+  font-size: 14px;
+  font-weight: 700;
+  -webkit-text-stroke: 0.6px var(--ink);
+}
+.open-act.place.off {
+  background: #a5a39b;
+}
+.open-act.rotate {
+  right: calc(42px + var(--safe-r));
+  bottom: calc(142px + var(--safe-b));
+  width: 62px;
+  height: 62px;
+  background: var(--blue);
+}
+.open-act.rotate svg {
+  width: 55%;
+  height: 55%;
+}
+/* Craft panel: middle of the screen, under the messages. */
+.open-craft {
+  position: absolute;
+  left: 50%;
+  top: calc(34% + var(--safe-t));
+  transform: translateX(-50%);
+  width: min(340px, 52vw);
+  min-width: 0;
+  max-height: calc(66% - 12px - var(--safe-t));
+  padding: 8px 10px;
+  gap: 6px;
+  text-align: left;
+  border-radius: 18px;
+  pointer-events: auto;
+}
+.craft-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.craft-head b {
+  font-size: 17px;
+}
+.craft-body {
+  gap: 5px;
+}
+.craft-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  background: #fff;
+  border: 2px solid rgba(43, 30, 26, 0.2);
+  border-radius: 10px;
+}
+.craft-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+.craft-info b {
+  font-size: 14px;
+}
+.craft-info small {
+  font-size: 11px;
+}
+.craft-row .btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+}
+@media (max-height: 430px) {
+  .open-day {
+    font-size: 15px;
+  }
+  .open-sky svg {
+    width: 18px;
+    height: 18px;
+  }
 }

@@ -1,4 +1,4 @@
-import type { RigidBody, World } from '@dimforge/rapier3d-compat';
+import type { Collider, RigidBody, World } from '@dimforge/rapier3d-compat';
 import {
   CRACKER,
   DIFFICULTY,
@@ -22,11 +22,15 @@ import { BotBrain, type BotWorld, type Brain } from './bots';
 import type { BambooSpot, Cracker, CrackerDrop, Javelin, RackSlot, Survivor, Zombie } from './entities';
 import type { GameMap } from './gameMap';
 import type { Circle } from './mapLayout';
+import { OPEN, PIECES, tileCenter } from './open/config';
+import { createOpenBot } from './open/openBots';
+import { PhysicsChunks, rockCollider, treeCollider } from './open/physicsChunks';
+import type { OpenCommand, OpenHost, OpenRulesApi, OpenView, Piece, WorldJoin, WorldSave } from './open/types';
 import { RAPIER } from './physics';
 import { Obstacles } from './steering';
 import type { Mission, MissionHost } from './story/Mission';
 import type { HordeRules } from './story/types';
-import { NO_INPUT, type GameEvent, type MatchPhase, type PlayerInput, type PlayerSpec, type Snapshot } from './types';
+import { NO_INPUT, type GameEvent, type MatchPhase, type PlayerInput, type PlayerSpec, type Snapshot, type WeaponType } from './types';
 import { hasJavelins, PAW, stowed, SWITCH_TIME, WEAPONS, type MeleeDef } from './weapons';
 
 /** Rule changes for one match (story chapters). Everything defaults to the normal game. */
@@ -44,10 +48,26 @@ export interface SimOptions {
   mission?: Mission | null;
   /** Scales the horde (on top of `horde` / `sleepShare`), zombie damage and speed. Default normal. */
   difficulty?: Difficulty;
+  /**
+   * Infinite mode: the open world's rules (an OpenRules). The match never ends, the map's ground is
+   * streamed in chunks, and the rules run hunger, building, hordes and sieges through OpenHost.
+   */
+  open?: OpenRulesApi | null;
 }
 
 /** Height of the capsule centre above the feet (same for pandas and zombies). */
 const CENTER_HEIGHT = SURVIVOR.halfHeight + SURVIVOR.radius;
+
+/**
+ * Rapier collision groups, (membership << 16) | filter. Pandas and zombies collide with everything;
+ * gates only stop zombies, so pandas walk through their own gates.
+ */
+const SURVIVOR_GROUPS = (0x0001 << 16) | 0xffff;
+const ZOMBIE_GROUPS = (0x0002 << 16) | 0xffff;
+const GATE_GROUPS = (0x0004 << 16) | 0x0002;
+
+/** Physics chunks around the bodies are checked this often (ticks). */
+const CHUNK_CHECK = 15;
 
 /** The story cart's solid box (it rolls along +Z of its own frame). */
 const CART_SIZE = { halfWidth: 0.85, halfHeight: 0.7, halfLength: 1.4 };
@@ -76,7 +96,7 @@ function distToSegment(x: number, z: number, a: { x: number; z: number }, b: { x
  * Authoritative game state. Pure logic, no rendering: in single player it runs locally,
  * in multiplayer it runs on the host and the other phones only draw its snapshots.
  */
-export class Simulation implements BotWorld, MissionHost {
+export class Simulation implements BotWorld, MissionHost, OpenHost {
   readonly survivors: Survivor[] = [];
   readonly zombies: Zombie[] = [];
   readonly javelins: Javelin[] = [];
@@ -84,9 +104,12 @@ export class Simulation implements BotWorld, MissionHost {
   readonly crackerDrops: CrackerDrop[] = [];
   readonly bamboo: BambooSpot[];
   readonly racks: RackSlot[];
+  readonly difficulty: Difficulty;
 
   private readonly world: World;
   private readonly obstacles: Obstacles;
+  /** Hiding thickets, hashed: the open world has hundreds of them. */
+  private readonly thickets: Obstacles;
   private readonly scratch: Circle[] = [];
   private readonly rng = new Rng((Math.random() * 4294967296) >>> 0);
   private events: GameEvent[] = [];
@@ -113,6 +136,10 @@ export class Simulation implements BotWorld, MissionHost {
   /** Story cart (escort chapters): a body that pushes everyone aside, and its footprint for steering. */
   private cartBody: RigidBody | null = null;
   private cart: Circle | null = null;
+  /** Infinite mode: its rules, the streamed ground, and the building pieces' colliders by handle. */
+  private readonly openRules: OpenRulesApi | null;
+  private readonly chunks: PhysicsChunks | null;
+  private readonly pieceBodies = new Map<number, Collider>();
 
   constructor(
     readonly map: GameMap,
@@ -122,9 +149,13 @@ export class Simulation implements BotWorld, MissionHost {
     this.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
     this.world.timestep = SIM_DT;
 
-    this.timed = options.timeLimit !== null;
+    const open = options.open && map.open ? options.open : null;
+    this.openRules = open;
+    // The open world has no clock and no rescue hut: it goes on until the players leave.
+    this.timed = !open && options.timeLimit !== null;
     this.timeLeft = options.timeLimit ?? MATCH_TIME;
-    const diff = DIFFICULTY[options.difficulty ?? 'normal'];
+    this.difficulty = options.difficulty ?? 'normal';
+    const diff = DIFFICULTY[this.difficulty];
     const rules: HordeRules = {
       base: ZOMBIE.base,
       perSurvivor: ZOMBIE.perSurvivor,
@@ -141,7 +172,7 @@ export class Simulation implements BotWorld, MissionHost {
     this.sleepShare = Math.min(0.9, (options.sleepShare ?? SLEEP.share) * diff.sleepShare);
     this.zombieDamage = diff.damage;
     this.zombieSpeed = diff.zombieSpeed;
-    this.goalRescue = options.goalRescue ?? true;
+    this.goalRescue = !open && (options.goalRescue ?? true);
     this.mission = options.mission ?? null;
     const { start } = map.layout;
     this.spawnAt = options.spawn ?? { x: start.x, z: start.z, toward: map.route.pts[1] }; // first waypoint, or the hut
@@ -152,10 +183,19 @@ export class Simulation implements BotWorld, MissionHost {
       ...props.rocks.map((r) => ({ x: r.x, z: r.z, r: r.radius })),
       ...(map.layout.landmarks ?? []).map((l) => ({ x: l.x, z: l.z, r: l.r })),
     ]);
+    this.thickets = new Obstacles(map.layout.thickets);
     this.bamboo = props.bambooSpots.map((b) => ({ ...b, active: true, respawn: 0 }));
     this.racks = props.racks.map((r) => ({ ...r, refill: 0 }));
 
+    this.chunks = open ? new PhysicsChunks(this.world, map) : null;
     this.buildStatic();
+    if (open) {
+      open.init(this);
+      for (const spec of specs) if (!spec.npc) this.addOpenSurvivor(spec);
+      // Everyone starts with the ground around them built, not just the patch under their feet.
+      this.chunks?.update(this.tick, [this.survivors, this.zombies], Infinity);
+      return;
+    }
     specs.filter((s) => !s.npc).forEach((spec, i) => this.spawnSurvivor(spec, i));
     this.mission?.init(
       this,
@@ -170,6 +210,8 @@ export class Simulation implements BotWorld, MissionHost {
     if (this.phase !== 'playing') return;
     this.tick++;
     if (this.timed) this.timeLeft = Math.max(0, this.timeLeft - SIM_DT);
+    const open = this.openRules;
+    open?.preStep(this);
 
     for (const s of this.survivors) {
       if (s.state === 'active') {
@@ -181,6 +223,7 @@ export class Simulation implements BotWorld, MissionHost {
     }
     for (const z of this.zombies) this.controlZombie(z);
 
+    if (this.chunks && this.tick % CHUNK_CHECK === 0) this.chunks.update(this.tick, [this.survivors, this.zombies]);
     this.world.step();
 
     for (const s of this.survivors) if (s.body) this.afterSurvivor(s);
@@ -188,8 +231,9 @@ export class Simulation implements BotWorld, MissionHost {
     this.updateJavelins();
     this.updateCrackers();
     this.updatePickups();
+    open?.postStep(this);
     this.mission?.step(this);
-    this.updateSpawning();
+    if (!open) this.updateSpawning();
     this.cleanupZombies();
     this.checkEnd();
     this.botsOut = this.countBotsOut();
@@ -260,6 +304,7 @@ export class Simulation implements BotWorld, MissionHost {
       racks: this.racks.map((r) => (r.refill > 0 ? null : r.weapon)),
       events,
       story: this.mission?.snapshot(),
+      open: this.openRules?.snapshot(),
     };
   }
 
@@ -283,8 +328,7 @@ export class Simulation implements BotWorld, MissionHost {
   /** A zombie that heads for the group wherever it is. False if (x, z) isn't a fair spot. */
   spawnHunter(x: number, z: number): boolean {
     if (!this.validSpawn(x, z)) return false;
-    this.spawnZombie(x, z, null);
-    this.zombies[this.zombies.length - 1].hunt = true;
+    this.createZombie(x, z, null).hunt = true;
     return true;
   }
 
@@ -327,11 +371,211 @@ export class Simulation implements BotWorld, MissionHost {
     const s = this.survivors.find((x) => x.spec.id === id);
     if (!s) return;
     s.spec = { ...s.spec, bot, name: name ?? s.spec.name };
-    s.brain = bot ? new BotBrain(this.survivors.indexOf(s)) : null;
+    s.brain = bot ? this.botBrain(this.survivors.indexOf(s)) : null;
   }
 
   dispose(): void {
     this.world.free();
+  }
+
+  // ================================================================ infinite mode
+
+  /** Simulation ticks so far (60 per second). */
+  get ticks(): number {
+    return this.tick;
+  }
+
+  /** What bots may know about the open world (BotWorld.open); null on normal maps. */
+  get open(): OpenView | null {
+    return this.openRules?.view ?? null;
+  }
+
+  /** Drop-in: puts a panda into the open world where the rules say (their saved spot, else the camp). */
+  addOpenSurvivor(spec: PlayerSpec): void {
+    const open = this.openRules;
+    if (!open || this.survivors.some((s) => s.spec.id === spec.id)) return;
+    const p = open.spawnPoint(spec);
+    const at = this.freeSpot(p.x, p.z, null);
+    this.chunks?.ensure(at.x, at.z);
+    const s = this.placeSurvivor(spec, at.x, at.z, Math.PI);
+    open.initSurvivor(s);
+  }
+
+  /** A panda leaves the match for good (a guest left the open world): the rules keep their state for the save. */
+  removeSurvivor(id: string): void {
+    const i = this.survivors.findIndex((s) => s.spec.id === id);
+    if (i < 0) return;
+    const s = this.survivors[i];
+    this.openRules?.forgetSurvivor(s);
+    if (s.body) {
+      this.world.removeRigidBody(s.body);
+      s.body = null;
+    }
+    this.survivors.splice(i, 1);
+    for (const z of this.zombies) if (z.target === s) z.target = null;
+  }
+
+  /** A player's build / craft command (infinite mode; ignored otherwise). */
+  command(id: string, cmd: OpenCommand): void {
+    this.openRules?.command(this, id, cmd);
+  }
+
+  /** The open world as it is now, for the save file; null on normal maps. */
+  saveWorld(now: number): WorldSave | null {
+    return this.openRules ? this.openRules.save(this, now) : null;
+  }
+
+  /** What a guest joining the open world now needs; null on normal maps. */
+  joinWorld(): WorldJoin | null {
+    return this.openRules ? this.openRules.join() : null;
+  }
+
+  spawnZombie(
+    x: number,
+    z: number,
+    opts: { asleep?: boolean; horde?: number; siege?: boolean; goal?: { x: number; z: number } | null } = {},
+  ): Zombie | null {
+    let out = 0;
+    for (const zb of this.zombies) if (zb.state !== 'dying') out++;
+    if (out >= OPEN.zombiesMax || !this.validSpawn(x, z)) return null;
+    const zb = this.createZombie(x, z, null, false, !!opts.asleep);
+    zb.horde = opts.horde ?? -1;
+    zb.siege = !!opts.siege;
+    // Kept by reference: a horde's marker moves on, and its zombies follow it.
+    zb.goal = opts.goal ?? null;
+    return zb;
+  }
+
+  despawnZombie(z: Zombie): void {
+    const i = this.zombies.indexOf(z);
+    if (i < 0) return;
+    if (z.body) {
+      this.world.removeRigidBody(z.body);
+      z.body = null;
+    }
+    this.zombies.splice(i, 1);
+  }
+
+  addPieceBody(p: Piece): number {
+    const def = PIECES[p.kind];
+    if (def.blocks === 'none') return -1;
+    const x = tileCenter(p.gx);
+    const z = tileCenter(p.gz);
+    const half = OPEN.tile / 2 - 0.02;
+    // From just below the lowest corner (tiles may slope a little) to its full height above the middle.
+    const t = this.map.terrain;
+    const low =
+      Math.min(t.heightAt(x - half, z - half), t.heightAt(x + half, z - half), t.heightAt(x - half, z + half), t.heightAt(x + half, z + half)) -
+      0.1;
+    const top = t.heightAt(x, z) + def.height;
+    const hy = Math.max(0.1, (top - low) / 2);
+    let desc = RAPIER.ColliderDesc.cuboid(half, hy, half).setTranslation(x, low + hy, z);
+    if (def.blocks === 'zombies') desc = desc.setCollisionGroups(GATE_GROUPS);
+    const c = this.world.createCollider(desc);
+    this.pieceBodies.set(c.handle, c);
+    return c.handle;
+  }
+
+  removePieceBody(handle: number): void {
+    const c = this.pieceBodies.get(handle);
+    if (!c) return;
+    this.pieceBodies.delete(handle);
+    this.world.removeCollider(c, true);
+  }
+
+  addObstacle(c: Circle): void {
+    this.obstacles.add(c);
+  }
+
+  removeObstacle(c: Circle): void {
+    this.obstacles.remove(c);
+  }
+
+  respawnSurvivor(s: Survivor, x: number, z: number, hp: number): void {
+    const at = this.freeSpot(x, z, s);
+    this.chunks?.ensure(at.x, at.z);
+    const y = this.map.terrain.heightAt(at.x, at.z);
+    if (s.body) {
+      s.body.setTranslation({ x: at.x, y: y + CENTER_HEIGHT + 0.05, z: at.z }, true);
+      s.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    } else {
+      s.body = this.createBody(at.x, at.z, SURVIVOR_GROUPS);
+    }
+    s.x = at.x;
+    s.y = y;
+    s.z = at.z;
+    s.speed = 0;
+    s.state = 'active';
+    s.hp = Math.max(1, Math.min(SURVIVOR.maxHp, hp));
+    s.bleed = 0;
+    s.revive = 0;
+    s.hurt = 0;
+    s.attackTime = -1;
+    s.dashTime = 0;
+  }
+
+  giveWeapon(s: Survivor, w: WeaponType): void {
+    // Same as a weapon rack: into the extra slot (the starting weapon stays), javelins come full.
+    const have = w === s.main || w === s.extra;
+    if (!have) {
+      if (s.weapon !== s.main) s.attackTime = -1; // the old second weapon is dropped mid-swing
+      s.extra = w;
+      if (!hasJavelins(s)) s.ammo = 0;
+      if (s.attackTime < 0) {
+        s.weapon = w;
+        s.attackCd = Math.max(s.attackCd, SWITCH_TIME);
+      }
+    }
+    if (w === 'javelin') {
+      s.ammo = JAVELIN.ammo;
+      s.carve = 0;
+    }
+  }
+
+  /** Something loud at (x, z): sleeping zombies within `radius` wake up, and the open world's hordes may hear it. */
+  noise(x: number, z: number, radius: number): void {
+    this.wake(x, z, radius);
+    this.openRules?.onNoise(x, z, radius);
+  }
+
+  hurtZombie(z: Zombie, damage: number): void {
+    if (z.state === 'dying') return;
+    z.hp -= damage;
+    z.hurt = 1;
+    const kill = z.hp <= 0;
+    this.events.push({ e: 'hit', x: r1(z.x), y: r1(z.y + 0.9), z: r1(z.z), kill });
+    if (kill) this.killZombie(z, null);
+  }
+
+  /** Same test as normal spawns: dry, not on a ridge or an obstacle, not right next to a panda. */
+  validSpawn(x: number, z: number): boolean {
+    const { layout, terrain } = this.map;
+    const half = layout.size / 2 - 3;
+    if (Math.abs(x) > half || Math.abs(z) > half) return false;
+    if (terrain.isWater(x, z) || terrain.ridgeAmount(x, z) > 0.15) return false;
+    if (dist2d({ x, z }, layout.start) < layout.start.r + 8) return false;
+    if (dist2d({ x, z }, layout.goal) < layout.goal.r + 2) return false;
+    if (this.cart && dist2d({ x, z }, this.cart) < this.cart.r + 1) return false;
+    if (this.survivors.some((s) => s.state !== 'dead' && s.state !== 'rescued' && dist2d(s, { x, z }) < ZOMBIE.safeRadius)) return false;
+    return this.obstacles.near(x, z, 0.8, this.scratch).length === 0;
+  }
+
+  /** A bot buddy's brain: the open world's own bot there, the normal one elsewhere. */
+  private botBrain(slot: number): Brain {
+    return this.openRules ? createOpenBot(slot) : new BotBrain(slot);
+  }
+
+  /** (x, z), or the nearest spot around it with no other panda, tree or water on it (so bodies don't overlap). */
+  private freeSpot(x: number, z: number, self: Survivor | null): { x: number; z: number } {
+    const t = this.map.terrain;
+    for (let i = 0; i < 12; i++) {
+      const r = i === 0 ? 0 : 1.1 + i * 0.3;
+      const px = x + Math.sin(i * 2.4) * r;
+      const pz = z + Math.cos(i * 2.4) * r;
+      if (i > 0 && (t.isWater(px, pz) || this.obstacles.near(px, pz, SURVIVOR.radius + 0.1, this.scratch).length > 0)) continue;
+      if (!this.survivors.some((o) => o !== self && o.body && Math.hypot(o.x - px, o.z - pz) < SURVIVOR.radius * 2.5)) return { x: px, z: pz };
+    }
+    return { x, z };
   }
 
   /** Obstacle- and water-aware direction towards (dx, dz). Used by zombies and bots. */
@@ -452,11 +696,16 @@ export class Simulation implements BotWorld, MissionHost {
 
   // ================================================================ setup
 
+  /**
+   * The map's solid parts. In the open world the ground, trees and rocks are streamed by PhysicsChunks
+   * instead; the edge walls, ridges and bridges are few enough to build once.
+   */
   private buildStatic(): void {
     const { grid, props, layout } = this.map;
     const world = this.world;
+    const streamed = this.chunks !== null;
 
-    world.createCollider(RAPIER.ColliderDesc.trimesh(grid.positions, grid.indices).setFriction(0.3));
+    if (!streamed) world.createCollider(RAPIER.ColliderDesc.trimesh(grid.positions, grid.indices).setFriction(0.3));
 
     const half = layout.size / 2;
     const len = half + 2;
@@ -470,15 +719,9 @@ export class Simulation implements BotWorld, MissionHost {
       world.createCollider(RAPIER.ColliderDesc.cuboid(hx, 30, hz).setTranslation(x, 0, z));
     }
 
-    for (const t of props.trees) {
-      if (t.collide) world.createCollider(RAPIER.ColliderDesc.cylinder(2, t.radius).setTranslation(t.x, t.y + 1.5, t.z));
-    }
-    // Boulders: as tall as they look (plus a bit underground for slopes), so nothing invisible sticks out.
-    for (const r of props.rocks) {
-      const below = 0.6;
-      world.createCollider(
-        RAPIER.ColliderDesc.cylinder((r.height + below) / 2, r.radius).setTranslation(r.x, r.y + (r.height - below) / 2, r.z),
-      );
+    if (!streamed) {
+      for (const t of props.trees) if (t.collide) world.createCollider(treeCollider(t));
+      for (const r of props.rocks) world.createCollider(rockCollider(r));
     }
     for (const l of layout.landmarks ?? []) {
       world.createCollider(RAPIER.ColliderDesc.cylinder(4, l.r).setTranslation(l.x, this.map.terrain.heightAt(l.x, l.z) + 2, l.z));
@@ -516,7 +759,9 @@ export class Simulation implements BotWorld, MissionHost {
     }
   }
 
-  private createBody(x: number, z: number): RigidBody {
+  /** A panda's or zombie's capsule (`groups`: SURVIVOR_GROUPS or ZOMBIE_GROUPS). */
+  private createBody(x: number, z: number, groups: number): RigidBody {
+    this.chunks?.ensure(x, z);
     const y = this.map.terrain.heightAt(x, z);
     const body = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
@@ -525,7 +770,7 @@ export class Simulation implements BotWorld, MissionHost {
         .setCcdEnabled(true),
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.capsule(SURVIVOR.halfHeight, SURVIVOR.radius).setFriction(0).setRestitution(0),
+      RAPIER.ColliderDesc.capsule(SURVIVOR.halfHeight, SURVIVOR.radius).setFriction(0).setRestitution(0).setCollisionGroups(groups),
       body,
     );
     return body;
@@ -546,7 +791,7 @@ export class Simulation implements BotWorld, MissionHost {
   private placeSurvivor(spec: PlayerSpec, x: number, z: number, rot: number): Survivor {
     const s: Survivor = {
       spec,
-      body: this.createBody(x, z),
+      body: this.createBody(x, z, SURVIVOR_GROUPS),
       x,
       y: this.map.terrain.heightAt(x, z),
       z,
@@ -578,7 +823,7 @@ export class Simulation implements BotWorld, MissionHost {
       lastRack: -1,
       crackers: CRACKER.start,
       crackerCd: 0,
-      brain: spec.bot ? new BotBrain(this.survivors.length) : null,
+      brain: spec.bot ? this.botBrain(this.survivors.length) : null,
       npc: !!spec.npc,
       shielded: false,
     };
@@ -586,11 +831,11 @@ export class Simulation implements BotWorld, MissionHost {
     return s;
   }
 
-  private spawnZombie(x: number, z: number, from: string | null, sleeper = false, asleep = false): void {
+  private createZombie(x: number, z: number, from: string | null, sleeper = false, asleep = false): Zombie {
     const rot = this.rng.range(-Math.PI, Math.PI);
-    this.zombies.push({
+    const zombie: Zombie = {
       id: this.nextZombieId++,
-      body: this.createBody(x, z),
+      body: this.createBody(x, z, ZOMBIE_GROUPS),
       x,
       y: this.map.terrain.heightAt(x, z),
       z,
@@ -621,7 +866,13 @@ export class Simulation implements BotWorld, MissionHost {
       wanderX: 0,
       wanderZ: 0,
       groanCd: this.rng.range(2, 10),
-    });
+      horde: -1,
+      siege: false,
+      goal: null,
+      piece: -1,
+    };
+    this.zombies.push(zombie);
+    return zombie;
   }
 
   private spawnInitialHorde(): void {
@@ -631,7 +882,7 @@ export class Simulation implements BotWorld, MissionHost {
       const x = this.rng.range(-half, half);
       const z = this.rng.range(-half, half);
       if (dist2d({ x, z }, this.spawnAt) < 32) continue;
-      if (this.validSpawn(x, z)) this.spawnZombie(x, z, null, true, this.rng.next() < this.sleepShare);
+      if (this.validSpawn(x, z)) this.createZombie(x, z, null, true, this.rng.next() < this.sleepShare);
     }
   }
 
@@ -643,10 +894,18 @@ export class Simulation implements BotWorld, MissionHost {
 
     let mx = inp.mx;
     let mz = inp.mz;
-    const ml = Math.hypot(mx, mz);
+    let ml = Math.hypot(mx, mz);
     if (ml > 1) {
       mx /= ml;
       mz /= ml;
+    }
+    const open = this.openRules;
+    if (open) {
+      // Multiplayer leash: the part of the move that takes you too far from the others is dropped.
+      const l = open.leash(s, mx, mz);
+      mx = l.mx;
+      mz = l.mz;
+      ml = Math.hypot(mx, mz);
     }
     const moving = ml > 0.08;
     const weapon = WEAPONS[s.weapon];
@@ -716,8 +975,14 @@ export class Simulation implements BotWorld, MissionHost {
     if (s.dashTime > 0) {
       tx = s.dashX * SURVIVOR.dashSpeed;
       tz = s.dashZ * SURVIVOR.dashSpeed;
+      if (open) {
+        // A dash doesn't get round the leash either.
+        const l = open.leash(s, s.dashX, s.dashZ);
+        tx = l.mx * SURVIVOR.dashSpeed;
+        tz = l.mz * SURVIVOR.dashSpeed;
+      }
     } else {
-      let speed = SURVIVOR.speed;
+      let speed = open ? SURVIVOR.speed * open.speedMul(s) : SURVIVOR.speed;
       if (s.inWater) speed *= SURVIVOR.waterSpeedMul;
       if (s.attackTime >= 0) speed *= SURVIVOR.attackMoveMul;
       tx = mx * speed;
@@ -772,6 +1037,7 @@ export class Simulation implements BotWorld, MissionHost {
   }
 
   private melee(s: Survivor, w: MeleeDef): void {
+    let hits = 0;
     for (const z of this.zombies) {
       if (z.state === 'dying') continue;
       const dx = z.x - s.x;
@@ -785,7 +1051,10 @@ export class Simulation implements BotWorld, MissionHost {
       const nx = d > 0.01 ? dx / d : s.faceX;
       const nz = d > 0.01 ? dz / d : s.faceZ;
       this.damageZombie(z, w.damage, nx, nz, w.knockback, w.stun, s);
+      hits++;
     }
+    // Infinite mode: a swing at no zombie may chop a tree, break a rock… (only with nothing to fight in reach).
+    if (hits === 0) this.openRules?.swing(this, s, w.range, w.arc);
     // After the hits, so a sneak attack lands before its own noise wakes the victim.
     this.noise(s.x, s.z, NOISE.swing[s.weapon]);
   }
@@ -842,7 +1111,9 @@ export class Simulation implements BotWorld, MissionHost {
 
     s.hp = 0;
     s.state = 'downed';
-    s.bleed = this.someoneElseActive(s) ? DOWNED.bleedTime : DOWNED.aloneBleedTime;
+    const helpAround = this.someoneElseActive(s);
+    if (this.openRules) s.bleed = this.openRules.bleedTime(s, helpAround);
+    else s.bleed = helpAround ? DOWNED.bleedTime : DOWNED.aloneBleedTime;
     s.revive = 0;
     s.attackTime = -1;
     s.dashTime = 0;
@@ -872,9 +1143,13 @@ export class Simulation implements BotWorld, MissionHost {
     }
 
     s.revive = Math.max(0, s.revive - SIM_DT * 0.5);
-    if (!this.someoneElseActive(s)) s.bleed = Math.min(s.bleed, DOWNED.aloneBleedTime);
+    const open = this.openRules;
+    if (!this.someoneElseActive(s)) s.bleed = Math.min(s.bleed, open ? open.bleedTime(s, false) : DOWNED.aloneBleedTime);
     s.bleed -= SIM_DT;
-    if (s.bleed <= 0) this.turnIntoZombie(s);
+    if (s.bleed > 0) return;
+    // The open world never turns anyone: the rules respawn them at their bed.
+    if (open) open.bledOut(this, s);
+    else this.turnIntoZombie(s);
   }
 
   private turnIntoZombie(s: Survivor): void {
@@ -884,7 +1159,7 @@ export class Simulation implements BotWorld, MissionHost {
       this.world.removeRigidBody(s.body);
       s.body = null;
     }
-    this.spawnZombie(s.x, s.z, s.spec.id);
+    this.createZombie(s.x, s.z, s.spec.id);
     this.events.push({ e: 'turned', id: s.spec.id });
   }
 
@@ -899,7 +1174,7 @@ export class Simulation implements BotWorld, MissionHost {
     s.z = p.z;
     s.speed = Math.hypot(v.x, v.z);
     s.inWater = this.map.terrain.isWet(p.x, p.z);
-    s.hidden = s.attackTime < 0 && this.map.layout.thickets.some((t) => dist2d(t, s) < t.r);
+    s.hidden = s.attackTime < 0 && this.thickets.near(s.x, s.z, 0, this.scratch).length > 0;
     s.hurt = Math.max(0, s.hurt - SIM_DT * 3);
     if (s.inWater && !wasInWater) {
       this.events.push({ e: 'splash', x: r1(s.x), z: r1(s.z) });
@@ -908,9 +1183,10 @@ export class Simulation implements BotWorld, MissionHost {
     if (s.state === 'active') this.footsteps(s);
 
     if (p.y < -20) {
-      // Fell through the world somehow: put them back at the start.
-      const { start } = this.map.layout;
-      body.setTranslation({ x: start.x, y: this.map.terrain.heightAt(start.x, start.z) + 2, z: start.z }, true);
+      // Fell through the world somehow: put them back at the start (the open world's spawn point).
+      const at = this.openRules ? this.openRules.spawnPoint(s.spec) : this.map.layout.start;
+      this.chunks?.ensure(at.x, at.z);
+      body.setTranslation({ x: at.x, y: this.map.terrain.heightAt(at.x, at.z) + 2, z: at.z }, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       return;
     }
@@ -970,7 +1246,7 @@ export class Simulation implements BotWorld, MissionHost {
       z.retarget = 0;
       z.groanCd = this.rng.range(5, 12);
       this.events.push({ e: 'groan', x: r1(z.x), z: r1(z.z) });
-      this.noise(z.x, z.z, NOISE.groan);
+      this.wake(z.x, z.z, NOISE.groan); // rouses its neighbours; hordes don't come for a zombie's groan
     }
 
     if (z.retarget <= 0) {
@@ -985,7 +1261,9 @@ export class Simulation implements BotWorld, MissionHost {
       } else {
         z.lure = null;
         z.target = victim;
-        z.via = victim ? this.detour(z.x, z.z, victim.x, victim.z) : null;
+        // Nobody to chase: the way to its goal (infinite mode's hordes and sieges), if it has one.
+        const dest = victim ?? z.goal;
+        z.via = dest ? this.detour(z.x, z.z, dest.x, dest.z) : null;
       }
     }
     const t = z.target && z.target.state === 'active' ? z.target : null;
@@ -993,17 +1271,21 @@ export class Simulation implements BotWorld, MissionHost {
     let dirX = 0;
     let dirZ = 0;
     let speed = 0;
+    // Walking straight at a panda or its goal (not via a crossing): a wall in the way gets bitten.
+    let purposeful = false;
 
     if (z.state === 'bite') {
       z.stateTime += SIM_DT;
-      if (t) this.faceZombie(z, t.x - z.x, t.z - z.z);
+      if (t && z.piece < 0) this.faceZombie(z, t.x - z.x, t.z - z.z);
       if (!z.biteDone && z.stateTime >= ZOMBIE.biteWindup) {
         z.biteDone = true;
-        if (t && dist2d(t, z) < ZOMBIE.biteReach) this.hurtSurvivor(t, ZOMBIE.biteDamage * this.zombieDamage);
+        if (z.piece >= 0) this.openRules?.damagePiece(this, z.piece, ZOMBIE.biteDamage * this.zombieDamage * OPEN.pieceBite);
+        else if (t && dist2d(t, z) < ZOMBIE.biteReach) this.hurtSurvivor(t, ZOMBIE.biteDamage * this.zombieDamage);
       }
       if (z.stateTime >= ZOMBIE.biteTime) {
         z.state = 'walk';
         z.biteCd = ZOMBIE.biteCooldown;
+        z.piece = -1;
       }
     } else if (z.state === 'lunge') {
       z.stateTime += SIM_DT;
@@ -1036,6 +1318,7 @@ export class Simulation implements BotWorld, MissionHost {
         z.state = 'bite';
         z.stateTime = 0;
         z.biteDone = false;
+        z.piece = -1;
       } else if (d > ZOMBIE.lungeMin && d < ZOMBIE.lungeMax && z.lungeCd === 0 && this.rng.next() < ZOMBIE.lungeChance) {
         z.state = 'lunge';
         z.stateTime = 0;
@@ -1057,19 +1340,47 @@ export class Simulation implements BotWorld, MissionHost {
         dirZ = dz / d;
         speed = d < 0.9 ? 0 : ZOMBIE.speed * z.speedMul;
         if (speed === 0) this.faceZombie(z, dx, dz);
+        purposeful = speed > 0;
       }
     } else {
-      z.wanderT -= SIM_DT;
-      if (z.wanderT <= 0) {
-        z.wanderT = this.rng.range(2, 4);
-        const a = this.rng.range(0, Math.PI * 2);
-        const still = this.rng.next() < 0.3;
-        z.wanderX = still ? 0 : Math.cos(a);
-        z.wanderZ = still ? 0 : Math.sin(a);
+      // Infinite mode: a horde or siege zombie with nobody to chase heads for its goal (siege: at full speed).
+      const g = z.goal;
+      const gd = g ? Math.hypot(g.x - z.x, g.z - z.z) : 0;
+      if (g && (z.via || gd > 3)) {
+        const p = z.via ?? g;
+        const px = p.x - z.x;
+        const pz = p.z - z.z;
+        const pl = Math.hypot(px, pz) || 0.001;
+        dirX = px / pl;
+        dirZ = pz / pl;
+        speed = ZOMBIE.speed * z.speedMul * (z.siege ? 1 : 0.8);
+        purposeful = !z.via;
+      } else {
+        z.wanderT -= SIM_DT;
+        if (z.wanderT <= 0) {
+          z.wanderT = this.rng.range(2, 4);
+          const a = this.rng.range(0, Math.PI * 2);
+          const still = this.rng.next() < 0.3;
+          z.wanderX = still ? 0 : Math.cos(a);
+          z.wanderZ = still ? 0 : Math.sin(a);
+        }
+        dirX = z.wanderX;
+        dirZ = z.wanderZ;
+        speed = ZOMBIE.wanderSpeed;
       }
-      dirX = z.wanderX;
-      dirZ = z.wanderZ;
-      speed = ZOMBIE.wanderSpeed;
+    }
+
+    // A wall, gate or bed in the way: bite it (infinite mode).
+    if (purposeful && z.biteCd === 0 && this.openRules) {
+      const piece = this.openRules.blockingPiece(z, dirX, dirZ);
+      if (piece) {
+        z.state = 'bite';
+        z.stateTime = 0;
+        z.biteDone = false;
+        z.piece = piece.id;
+        this.faceZombie(z, dirX, dirZ);
+        speed = 0;
+      }
     }
 
     if (speed > 0 && z.state !== 'lunge' && this.map.terrain.isWet(z.x, z.z)) speed *= ZOMBIE.wadeSpeedMul;
@@ -1130,6 +1441,7 @@ export class Simulation implements BotWorld, MissionHost {
       const d = dist2d(s, z);
       let sense = s.hidden ? ZOMBIE.hiddenSense : ZOMBIE.sense;
       if (s === z.target) sense *= 1.3; // stick with the current victim a bit longer
+      if (z.siege) sense *= 1.5; // a siege comes looking for you
       if (z.hunt) sense = Infinity;
       if (d < sense && d < bestD) {
         bestD = d;
@@ -1146,24 +1458,31 @@ export class Simulation implements BotWorld, MissionHost {
     const kill = z.hp <= 0;
     this.events.push({ e: 'hit', x: r1(z.x), y: r1(z.y + 0.9), z: r1(z.z), kill });
     if (kill) {
-      z.state = 'dying';
-      z.stateTime = 0;
-      z.speed = 0;
-      if (z.body) {
-        this.world.removeRigidBody(z.body);
-        z.body = null;
-      }
-      if (by) by.kills++;
-      if (this.rng.next() < CRACKER.dropChance) this.dropCracker(z.x, z.z);
+      this.killZombie(z, by);
       return;
     }
     z.state = 'stun';
     z.stateTime = 0;
     z.stun = Math.max(z.stun, stun);
+    z.piece = -1;
     if (z.body) {
       const v = z.body.linvel();
       z.body.setLinvel({ x: nx * knockback, y: Math.min(v.y, 0) + knockback * 0.15, z: nz * knockback }, true);
     }
+  }
+
+  private killZombie(z: Zombie, by: Survivor | null): void {
+    z.state = 'dying';
+    z.stateTime = 0;
+    z.speed = 0;
+    z.piece = -1;
+    if (z.body) {
+      this.world.removeRigidBody(z.body);
+      z.body = null;
+    }
+    if (by) by.kills++;
+    if (this.rng.next() < CRACKER.dropChance) this.dropCracker(z.x, z.z);
+    this.openRules?.onZombieDeath(z);
   }
 
   private afterZombie(z: Zombie): void {
@@ -1179,6 +1498,7 @@ export class Simulation implements BotWorld, MissionHost {
     if (p.y < -20) {
       z.state = 'dying';
       z.stateTime = ZOMBIE.dyingTime;
+      this.openRules?.onZombieDeath(z); // gone for good: the horde director must not wait for it
     }
   }
 
@@ -1218,18 +1538,6 @@ export class Simulation implements BotWorld, MissionHost {
     return Math.max(0, Math.min(1, best));
   }
 
-  private validSpawn(x: number, z: number): boolean {
-    const { layout, terrain } = this.map;
-    const half = layout.size / 2 - 3;
-    if (Math.abs(x) > half || Math.abs(z) > half) return false;
-    if (terrain.isWater(x, z) || terrain.ridgeAmount(x, z) > 0.15) return false;
-    if (dist2d({ x, z }, layout.start) < layout.start.r + 8) return false;
-    if (dist2d({ x, z }, layout.goal) < layout.goal.r + 2) return false;
-    if (this.cart && dist2d({ x, z }, this.cart) < this.cart.r + 1) return false;
-    if (this.survivors.some((s) => s.state !== 'dead' && s.state !== 'rescued' && dist2d(s, { x, z }) < ZOMBIE.safeRadius)) return false;
-    return this.obstacles.near(x, z, 0.8, this.scratch).length === 0;
-  }
-
   private updateSpawning(): void {
     const anchors = this.survivors.filter((s) => !s.npc && (s.state === 'active' || s.state === 'downed'));
     if (!anchors.length) return;
@@ -1248,13 +1556,23 @@ export class Simulation implements BotWorld, MissionHost {
       const x = a.x + Math.sin(ang) * d;
       const z = a.z + Math.cos(ang) * d;
       if (this.validSpawn(x, z)) {
-        this.spawnZombie(x, z, null);
+        this.createZombie(x, z, null);
         return;
       }
     }
   }
 
   private cleanupZombies(): void {
+    if (this.openRules) {
+      // The open world's zombies belong to the horde director, which despawns its own: only clear away the dead.
+      for (let i = this.zombies.length - 1; i >= 0; i--) {
+        const z = this.zombies[i];
+        if (z.state !== 'dying' || z.stateTime < ZOMBIE.dyingTime) continue;
+        if (z.body) this.world.removeRigidBody(z.body);
+        this.zombies.splice(i, 1);
+      }
+      return;
+    }
     const anchors = this.survivors.filter((s) => !s.npc && (s.state === 'active' || s.state === 'downed'));
     let rearmost = -1; // route distance of the furthest-behind survivor, worked out on demand
     for (let i = this.zombies.length - 1; i >= 0; i--) {
@@ -1343,8 +1661,11 @@ export class Simulation implements BotWorld, MissionHost {
 
   // ================================================================ noise & firecrackers
 
-  /** Something loud at (x, z): sleeping zombies within `radius` wake up and turn towards it. */
-  private noise(x: number, z: number, radius: number): void {
+  /**
+   * Sleeping zombies within `radius` of (x, z) wake up and turn towards it. noise() does this too and tells
+   * the open world's hordes; footsteps and groans only wake (every step would call every horde over).
+   */
+  private wake(x: number, z: number, radius: number): void {
     for (const zb of this.zombies) {
       if (zb.state !== 'sleep' || Math.hypot(zb.x - x, zb.z - z) > radius) continue;
       zb.state = 'wake';
@@ -1360,7 +1681,7 @@ export class Simulation implements BotWorld, MissionHost {
     if (f < 0.05 || s.dashTime > 0) return;
     let r = f <= NOISE.sneakFrac ? NOISE.sneak : NOISE.sneak + ((NOISE.run - NOISE.sneak) * (f - NOISE.sneakFrac)) / (1 - NOISE.sneakFrac);
     if (s.hidden) r *= NOISE.thicketMul;
-    this.noise(s.x, s.z, r);
+    this.wake(s.x, s.z, r);
   }
 
   /** The nearest crackling firecracker close enough to pull this zombie in. */
@@ -1464,6 +1785,7 @@ export class Simulation implements BotWorld, MissionHost {
 
   private updatePickups(): void {
     const active = this.survivors.filter((s) => s.state === 'active');
+    const open = this.openRules;
 
     for (const b of this.bamboo) {
       if (!b.active) {
@@ -1471,12 +1793,21 @@ export class Simulation implements BotWorld, MissionHost {
         if (b.respawn <= 0) b.active = true;
         continue;
       }
-      const eater = active.find((s) => s.hp < SURVIVOR.maxHp && dist2d(s, b) < PICKUP.bambooRadius);
+      // A plain loop: the open world has hundreds of spots. There a hungry panda eats even at full health.
+      let eater: Survivor | null = null;
+      for (const s of active) {
+        if (dist2d(s, b) >= PICKUP.bambooRadius) continue;
+        if (s.hp < SURVIVOR.maxHp || (open !== null && open.wantsFood(s))) {
+          eater = s;
+          break;
+        }
+      }
       if (!eater) continue;
       eater.hp = Math.min(SURVIVOR.maxHp, eater.hp + PICKUP.bambooHeal);
       b.active = false;
       b.respawn = PICKUP.bambooRespawn;
       this.events.push({ e: 'eat', id: eater.spec.id });
+      open?.ate(eater);
     }
 
     // Racks hand out a copy of their weapon into the second slot (your starting weapon stays),
@@ -1555,6 +1886,7 @@ export class Simulation implements BotWorld, MissionHost {
   }
 
   private checkEnd(): void {
+    if (this.openRules) return; // the open world never ends: downed pandas respawn at their bed
     const m = this.mission;
     if (m) {
       // Story: the mission decides; it's lost when the player is gone (bots alone can't do the objectives).
@@ -1569,7 +1901,7 @@ export class Simulation implements BotWorld, MissionHost {
 
   /** Bots still playing when no human is (a guest who left counts as a bot) and at least one human made it; else 0. */
   private countBotsOut(): number {
-    if (this.mission || this.phase !== 'playing') return 0;
+    if (this.mission || this.openRules || this.phase !== 'playing') return 0;
     let bots = 0;
     let humanSaved = false;
     for (const s of this.survivors) {

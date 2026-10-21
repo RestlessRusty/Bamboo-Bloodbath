@@ -28,6 +28,12 @@ export class Snowfall {
     this.points.frustumCulled = false;
   }
 
+  /** 0..1: thins the flakes out (the open world fades snowfall in and out at the snow biome's edge). */
+  setStrength(k: number): void {
+    this.points.material.opacity = 0.9 * k;
+    this.points.visible = k > 0.01;
+  }
+
   update(dt: number, time: number, cx: number, cy: number, cz: number): void {
     const p = this.pos;
     for (let i = 0; i < COUNT; i++) {

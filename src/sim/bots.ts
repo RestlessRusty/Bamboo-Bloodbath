@@ -1,6 +1,7 @@
 import { CRACKER, JAVELIN, NOISE } from '../config';
 import type { BambooSpot, Cracker, CrackerDrop, Javelin, Survivor, Zombie } from './entities';
 import type { GameMap } from './gameMap';
+import type { OpenView } from './open/types';
 import type { PlayerInput } from './types';
 import { hasJavelins, stowed } from './weapons';
 
@@ -17,6 +18,8 @@ export interface BotWorld {
   detour(x: number, z: number, tx: number, tz: number): { x: number; z: number; cost: number; wall: boolean } | null;
   /** Where buddies should stay (story: beside the cart, heading dx, dz), or null to follow the leader. */
   guard(): { x: number; z: number; dx: number; dz: number } | null;
+  /** Infinite mode's world (pieces, nodes, base, packs), or null on normal maps. */
+  readonly open: OpenView | null;
 }
 
 /** Anything that drives a survivor instead of a player's controls. */
@@ -225,14 +228,21 @@ export class BotBrain implements Brain {
       goTo(guard.x + guard.dx * back - guard.dz * side * 2.1, guard.z + guard.dz * back + guard.dx * side * 2.1, 0.6);
     } else if (leader) {
       // Walk a little behind the leader (relative to the way ahead), on our own side.
-      const ahead = w.map.route.locate(leader.x, leader.z).next;
-      const gx = ahead.x - leader.x;
-      const gz = ahead.z - leader.z;
-      const gl = Math.hypot(gx, gz) || 1;
-      const fx = gx / gl;
-      const fz = gz / gl;
+      // The open world has no way ahead: behind the way the leader is facing instead.
+      let fx = leader.faceX;
+      let fz = leader.faceZ;
+      if (!w.open) {
+        const ahead = w.map.route.locate(leader.x, leader.z).next;
+        const gx = ahead.x - leader.x;
+        const gz = ahead.z - leader.z;
+        const gl = Math.hypot(gx, gz) || 1;
+        fx = gx / gl;
+        fz = gz / gl;
+      }
       const side = SLOT_SIDE[this.slot % SLOT_SIDE.length];
       goTo(leader.x - fx * 2.2 - fz * side * 1.8, leader.z - fz * 2.2 + fx * side * 1.8, leader.speed > 0.5 ? 0.4 : 1.5);
+    } else if (w.open) {
+      // Nobody to follow in the open world (the leader is down or respawning): hold still.
     } else {
       const next = w.map.route.locate(me.x, me.z).next;
       goTo(next.x, next.z, 0);

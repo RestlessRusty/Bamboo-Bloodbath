@@ -1,4 +1,6 @@
 import { NET_INTERP_TICKS, SIM_HZ } from '../config';
+import { WorldMirror } from '../sim/open/mirror';
+import type { OpenCommand, WorldJoin } from '../sim/open/types';
 import { NO_INPUT, type PlayerInput, type PlayerSpec, type Snapshot } from '../sim/types';
 import { Presenter } from './Presenter';
 import type { GameContext, Session } from './Session';
@@ -10,11 +12,16 @@ const MAX_BUFFER = 40;
 export interface ClientLink {
   sendInput(input: PlayerInput): void;
   requestEnd(): void;
+  /** Infinite mode: build / craft requests go to the host's rules. */
+  sendCommand(cmd: OpenCommand): void;
 }
 
 /**
  * A guest's view of a match: sends inputs to the host and draws the host's snapshots,
  * slightly in the past so it can interpolate smoothly between them.
+ *
+ * Infinite mode (`open`, the world as it was when we joined): a WorldMirror follows the world events of
+ * every snapshot, in the order they come, and the renderer and HUDs draw the world from it.
  */
 export class RemoteGame implements Session {
   paused = false;
@@ -25,6 +32,9 @@ export class RemoteGame implements Session {
   private ended = false;
   private sendTimer = 0;
   private pending: PlayerInput = { ...NO_INPUT };
+  /** Ids of the pandas we have models for (infinite mode: pandas come and go with their players). */
+  private ids: string[];
+  private readonly mirror: WorldMirror | null = null;
 
   constructor(
     private readonly ctx: GameContext,
@@ -32,20 +42,35 @@ export class RemoteGame implements Session {
     private readonly localId: string,
     private readonly onEnd: (snap: Snapshot) => void,
     private readonly link: ClientLink,
+    open: WorldJoin | null = null,
   ) {
     this.presenter = new Presenter(ctx, specs, localId);
+    this.ids = specs.map((s) => s.id);
     ctx.renderer.setPlayers(specs, localId);
     ctx.hud.setTeam(specs, localId);
+    if (open) {
+      const map = ctx.renderer.currentMap;
+      this.mirror = new WorldMirror(map, open);
+      ctx.renderer.setOpenMirror(this.mirror);
+      ctx.hud.setOpenMirror(this.mirror, true);
+      ctx.openHud?.start(map, this.mirror, localId);
+    }
   }
 
   get isOver(): boolean {
     return this.ended;
   }
 
-  /** The host says pandas changed hands (someone left, came back, or took over a bot). */
+  /** The host says pandas changed hands (someone left, came back, or took over a bot), or joined or left the world. */
   updateSpecs(specs: readonly PlayerSpec[]): void {
     this.presenter.setSpecs(specs);
-    this.ctx.renderer.updateSpecs(specs, this.localId);
+    const ids = specs.map((s) => s.id);
+    if (ids.length !== this.ids.length || ids.some((id) => !this.ids.includes(id))) {
+      this.ids = ids;
+      this.ctx.renderer.setPlayers(specs, this.localId);
+    } else {
+      this.ctx.renderer.updateSpecs(specs, this.localId);
+    }
     this.ctx.hud.setTeam(specs, this.localId);
   }
 
@@ -54,7 +79,13 @@ export class RemoteGame implements Session {
     if (!this.ended) this.link.requestEnd();
   }
 
+  command(cmd: OpenCommand): void {
+    if (this.mirror && !this.ended) this.link.sendCommand(cmd);
+  }
+
   receive(snap: Snapshot): void {
+    // Every snapshot's world events count, even one too late to draw: the mirror must not miss a change.
+    this.mirror?.apply(snap.events);
     const last = this.buffer[this.buffer.length - 1];
     if (last && snap.tick <= last.tick) return;
     this.buffer.push(snap);
@@ -93,6 +124,7 @@ export class RemoteGame implements Session {
 
     renderer.updateGame(this.ended ? 0 : dt, a, b, alpha, this.localId);
     hud.update(latest, fps);
+    if (this.mirror) this.ctx.openHud?.update(latest);
     const me = latest.survivors.find((s) => s.id === this.localId);
     this.ctx.input.setCrackerCount(me?.crackers ?? 0);
     this.ctx.input.setOtherWeapon(me?.state === 'active' ? me.other : null);
@@ -100,6 +132,13 @@ export class RemoteGame implements Session {
 
   dispose(): void {
     this.ctx.renderer.clearPlayers();
+    if (this.mirror) {
+      this.ctx.openHud?.stop();
+      this.ctx.renderer.setGhost(null);
+      this.ctx.renderer.setOpenMirror(null);
+      this.ctx.hud.setOpenMirror(null);
+      this.ctx.input.setBuildMode(false);
+    }
   }
 
   /** Sample every frame, send at 30 Hz; taps and swipes between sends are not lost. */

@@ -97,6 +97,17 @@ export class Effects {
     this.burst(x, y + 1, z, 14, [color, 0xffffff], 2.6, 0.06, -1);
   }
 
+  /** Chips flying off a tree, rock or scrap pile being gathered (`color`: wood, stone, rust…). */
+  chips(x: number, y: number, z: number, color = 0xb07a45): void {
+    this.burst(x, y + 0.7, z, 8, [color, color, 0xffffff], 2.6, 0.06, 10);
+  }
+
+  /** A building piece falling to rubble: heavy chunks and a cloud of dust. */
+  debris(x: number, y: number, z: number, color = 0x8b5a3c): void {
+    this.burst(x, y + 0.8, z, 14, [color, 0x6b4423, 0x9a9a9a], 3.4, 0.1, 12);
+    this.burst(x, y + 0.2, z, 10, [0xe9dcc0, 0xd8c9a6, 0xbdbdbd], 1.8, 0.18, 1);
+  }
+
   /** One crack of a firecracker string. */
   pop(x: number, y: number, z: number): void {
     this.burst(x, y + 0.1, z, 5, [0xffe066, 0xff8a2a, 0xffffff], 2.4, 0.05, 6);

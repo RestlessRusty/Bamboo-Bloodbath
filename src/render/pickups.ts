@@ -1,9 +1,18 @@
 import * as THREE from 'three';
 import { lerp } from '../core/math';
 import type { GameMap } from '../sim/gameMap';
+import type { SpotProp } from '../sim/props';
 import type { CrackerDropSnap, CrackerSnap, JavelinSnap, Snapshot, WeaponType } from '../sim/types';
-import { addOutline, toon } from './toon';
+import { bake, part, type Part } from './open/bake';
+import { addOutline, outlineMaterial, toon, toonGradient } from './toon';
 import { buildWeapon } from './weaponModels';
+
+/** With more snack spots than this (the open world has hundreds), they're drawn instanced instead. */
+const MANY_SNACKS = 40;
+/** Instanced snacks are only drawn this close to the camera's focus… */
+const SNACK_RANGE = 70;
+/** …and at most this many at once. */
+const SNACK_DRAWN = 64;
 
 interface RackView {
   holder: THREE.Group;
@@ -22,6 +31,7 @@ interface CrackerGeos {
 export class PickupsView {
   readonly group = new THREE.Group();
   private readonly snacks: THREE.Group[] = [];
+  private readonly snackBatch: SnackBatch | null = null;
   private readonly racks: RackView[] = [];
   private readonly javelins = new Map<number, THREE.Group>();
   private readonly thrown = new Map<number, THREE.Group>();
@@ -40,7 +50,13 @@ export class PickupsView {
     const ring = new THREE.RingGeometry(0.45, 0.62, 24).rotateX(-Math.PI / 2);
     this.ring = ring;
 
-    for (const spot of map.props.bambooSpots) {
+    if (map.props.bambooSpots.length > MANY_SNACKS) {
+      this.snackBatch = new SnackBatch(map.props.bambooSpots, ring, this.glowMat);
+      this.group.add(...this.snackBatch.meshes);
+    }
+    // One group of meshes per snack: fine for the dozen or two of a normal map.
+    const spots = this.snackBatch ? [] : map.props.bambooSpots;
+    for (const spot of spots) {
       const g = new THREE.Group();
       g.position.set(spot.x, spot.y, spot.z);
       const glow = new THREE.Mesh(ring, this.glowMat);
@@ -69,7 +85,9 @@ export class PickupsView {
     }
   }
 
-  update(time: number, prev: Snapshot, curr: Snapshot, alpha: number): void {
+  /** `focus`: where the camera looks (only needed with many snack spots: the near ones get drawn). */
+  update(time: number, prev: Snapshot, curr: Snapshot, alpha: number, focus?: { x: number; z: number }): void {
+    this.snackBatch?.update(time, curr.bamboo, focus);
     this.snacks.forEach((g, i) => {
       const active = curr.bamboo[i] ?? true;
       g.visible = active;
@@ -208,6 +226,71 @@ function buildCracker(geos: CrackerGeos): THREE.Group {
   fuse.rotation.z = -0.4;
   g.add(fuse);
   return g;
+}
+
+/**
+ * Hundreds of bamboo snacks (the open world): the snack baked into one vertex-coloured geometry, drawn
+ * as three instanced meshes (snack, ink, glow ring) holding only the ones near the camera.
+ */
+class SnackBatch {
+  readonly meshes: THREE.InstancedMesh[];
+  private readonly body: THREE.InstancedMesh;
+  private readonly ink: THREE.InstancedMesh;
+  private readonly glow: THREE.InstancedMesh;
+  private readonly m = new THREE.Matrix4();
+
+  constructor(
+    private readonly spots: readonly SpotProp[],
+    ring: THREE.BufferGeometry,
+    glowMat: THREE.Material,
+  ) {
+    const { body, ink } = bakeSnack();
+    const mat = new THREE.MeshToonMaterial({ color: 0xffffff, vertexColors: true, gradientMap: toonGradient() });
+    this.body = new THREE.InstancedMesh(body, mat, SNACK_DRAWN);
+    this.body.castShadow = true;
+    this.ink = new THREE.InstancedMesh(ink, outlineMaterial(), SNACK_DRAWN);
+    this.glow = new THREE.InstancedMesh(ring, glowMat, SNACK_DRAWN);
+    this.meshes = [this.glow, this.body, this.ink];
+    for (const mesh of this.meshes) {
+      mesh.count = 0;
+      mesh.frustumCulled = false;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    }
+  }
+
+  /** Bobbing and turning like the single snacks; eaten ones (`bamboo[i]` false) are left out. */
+  update(time: number, bamboo: readonly boolean[], focus?: { x: number; z: number }): void {
+    const m = this.m;
+    let n = 0;
+    for (let i = 0; i < this.spots.length && n < SNACK_DRAWN; i++) {
+      if (!(bamboo[i] ?? true)) continue;
+      const s = this.spots[i];
+      if (focus && (Math.abs(s.x - focus.x) > SNACK_RANGE || Math.abs(s.z - focus.z) > SNACK_RANGE)) continue;
+      m.makeRotationY(time * 1.2 + i).setPosition(s.x, s.y + 0.35 + Math.sin(time * 2.4 + i) * 0.08, s.z);
+      this.body.setMatrixAt(n, m);
+      this.ink.setMatrixAt(n, m);
+      this.glow.setMatrixAt(n, m.makeTranslation(s.x, s.y + 0.05, s.z));
+      n++;
+    }
+    for (const mesh of this.meshes) {
+      mesh.count = n;
+      mesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+}
+
+/** The same snack as buildSnack(), as one geometry coloured per vertex plus the stalks' ink hulls. */
+function bakeSnack(): { body: THREE.BufferGeometry; ink: THREE.BufferGeometry } {
+  const parts: Part[] = [];
+  const stalk = (h: number, x: number, z: number, tilt: number) =>
+    parts.push(part(new THREE.CylinderGeometry(0.06, 0.07, h, 6), 0x8cc84b, x, h / 2, z, { rz: tilt, ink: 1.15 }));
+  stalk(0.5, 0, 0, 0);
+  stalk(0.42, 0.1, 0.04, -0.2);
+  stalk(0.36, -0.08, 0.06, 0.25);
+  parts.push(part(new THREE.TorusGeometry(0.13, 0.025, 6, 16).rotateX(Math.PI / 2), 0xe2463f, 0, 0.18, 0));
+  for (const s of [1, -1]) parts.push(part(new THREE.ConeGeometry(0.06, 0.32, 3), 0x5fb347, 0.1 * s, 0.5, 0, { rz: -0.9 * s, sz: 0.3 }));
+  const { body, ink } = bake(parts);
+  return { body, ink: ink! };
 }
 
 function buildSnack(): THREE.Group {

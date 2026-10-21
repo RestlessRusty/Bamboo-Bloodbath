@@ -34,6 +34,12 @@ const WEAPON_ICONS: Record<WeaponType, string> = {
   javelin: '<svg viewBox="0 0 24 24"><path d="M4 20L18.5 5.5M19.5 4.5l-5.5 1 4.5 4.5z"/></svg>',
 };
 
+/**
+ * Infinite mode's keyboard shortcuts, handed to OpenHud: build mode on/off, rotate, place (or upgrade /
+ * repair the piece on the tile), demolish, the craft panel, and a piece of the build palette (1-based).
+ */
+export type BuildKey = 'toggle' | 'rotate' | 'place' | 'demolish' | 'craft' | number;
+
 interface TapPointer {
   id: number;
   x0: number;
@@ -62,9 +68,14 @@ export async function requestTiltPermission(): Promise<boolean> {
  * the selected touch scheme (joystick / tilt / tap & swipe), plus keyboard and gamepad.
  */
 export class InputManager {
+  /** Infinite mode: build keys go here (set while an open world is being played). */
+  onBuildKey?: (key: BuildKey) => void;
+
   private scheme: ControlScheme = 'joystick';
   private enabled = false;
   private flipTilt = false;
+  /** Infinite mode's build mode: walking only, no fighting (the buttons make way for OpenHud's). */
+  private building = false;
 
   private readonly layer: HTMLDivElement;
   private readonly joyBase: HTMLDivElement;
@@ -190,6 +201,20 @@ export class InputManager {
     this.swapBtn.setAttribute('aria-label', `Switch to ${WEAPONS[w].label.toLowerCase()}`);
   }
 
+  /**
+   * Infinite mode's build mode: hides the attack, dash, firecracker and switch buttons (OpenHud puts
+   * Place / Rotate / Exit there) and keeps sample() from reporting attacks, firecrackers or switches.
+   */
+  setBuildMode(on: boolean): void {
+    if (on === this.building) return;
+    this.building = on;
+    this.layer.classList.toggle('building', on);
+    this.attackHeld = false;
+    this.attackPulse = false;
+    this.crackerPulse = false;
+    this.swapPulse = false;
+  }
+
   calibrateTilt(): void {
     if (this.beta === null || this.gamma === null) {
       this.needsCalibration = true;
@@ -294,6 +319,12 @@ export class InputManager {
     if (len > 1) {
       mx /= len;
       mz /= len;
+    }
+    // Building: Space places a piece and R rotates it, so neither may swing or switch weapons.
+    if (this.building) {
+      attack = false;
+      cracker = false;
+      swap = false;
     }
     return { mx, mz, ax, az, attack, dash, cracker, swap };
   }
@@ -417,6 +448,7 @@ export class InputManager {
       return;
     }
     this.keys.add(e.code);
+    if (!e.repeat && this.enabled && this.onBuildKey) this.buildKey(e);
     if (!e.repeat && (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyK')) this.dashPulse = true;
     if (!e.repeat && (e.code === 'Space' || e.code === 'KeyJ')) this.attackPulse = true;
     if (!e.repeat && (e.code === 'KeyE' || e.code === 'KeyL')) this.crackerPulse = true;
@@ -425,6 +457,26 @@ export class InputManager {
     // Tab still moves focus in the menus; in a match it's the switch key.
     if (e.code === 'Tab' && this.enabled) e.preventDefault();
   };
+
+  /**
+   * Infinite mode keys. B, F and the number keys (pick a piece, entering build mode) always; R, Space /
+   * Enter and X only while building, where they'd otherwise switch weapons or attack (sample() drops those).
+   */
+  private buildKey(e: KeyboardEvent): void {
+    const send = this.onBuildKey;
+    if (!send) return;
+    if (e.code === 'KeyB') send('toggle');
+    else if (e.code === 'KeyF') send('craft');
+    else if (/^Digit[1-8]$/.test(e.code)) send(Number(e.code.slice(5)));
+    else if (!this.building) return;
+    else if (e.code === 'KeyR') send('rotate');
+    else if (e.code === 'Space' || e.code === 'Enter' || e.code === 'NumpadEnter') {
+      // Not also "clicking" whichever HUD button was tapped last.
+      e.preventDefault();
+      send('place');
+    }
+    else if (e.code === 'KeyX' || e.code === 'Delete') send('demolish');
+  }
 
   private readonly onOrientation = (e: DeviceOrientationEvent): void => {
     if (e.beta === null || e.gamma === null) return;

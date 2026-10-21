@@ -1,4 +1,5 @@
 import type { MapLayout } from './mapLayout';
+import type { OpenWorldData } from './open/types';
 import { generateProps, type MapProps } from './props';
 import { Route } from './route';
 import { buildTerrainGrid, Terrain, type TerrainGrid } from './terrain';
@@ -12,7 +13,10 @@ export interface GameMap {
   terrain: Terrain;
   route: Route;
   props: MapProps;
+  /** Whole-map terrain grid. The open world's is a tiny placeholder: it streams chunks instead. */
   grid: TerrainGrid;
+  /** Infinite mode's generated world (sim/open/worldgen.ts); absent on normal maps. */
+  open?: OpenWorldData;
 }
 
 export function createGameMap(layout: MapLayout): GameMap {

@@ -3,19 +3,35 @@ import { CAMERA, DOWNED, SURVIVOR } from '../config';
 import { clamp, damp, lerp, lerpAngle } from '../core/math';
 import type { Quality } from '../settings';
 import type { GameMap } from '../sim/gameMap';
+import { OPEN } from '../sim/open/config';
+import type { WorldMirror } from '../sim/open/mirror';
+import type { GhostSpec } from '../sim/open/types';
 import type { PandaVariant, PlayerSpec, Snapshot, SurvivorSnap, WeaponType, ZombieSnap } from '../sim/types';
 import { Effects } from './effects';
 import { HordeView } from './horde';
 import { NameTag } from './nameTag';
+import { OpenWorldView } from './open/OpenWorldView';
 import { PANDA_LOOKS, PandaModel } from './pandaModel';
 import { PickupsView } from './pickups';
 import { Snowfall } from './snowfall';
 import { StoryView } from './storyView';
 import { disposeObject } from './toon';
-import { buildWorld, type WorldView } from './world';
+import { buildWorld } from './world';
 
 const RIPPLE_GEO = new THREE.RingGeometry(0.45, 0.62, 24).rotateX(-Math.PI / 2);
 const ZOMBIE_LOOKS = [0xffffff, 0xe6f0d8, 0xf0e6dc, 0xdde6ea];
+/** Open world before the first snapshot (or in the menu): a bright morning. */
+const OPEN_DEFAULT_TIME = 0.2;
+/** Snowfall starts once this much of the view is snowy highlands, and stops below SNOW_OFF. */
+const SNOW_ON = 0.5;
+const SNOW_OFF = 0.35;
+
+/** What the scene holds as its world: a whole map (buildWorld) or the streamed open world. */
+interface SceneWorld {
+  readonly group: THREE.Group;
+  update(dt: number, time: number, focusX: number, focusZ: number): void;
+  dispose(): void;
+}
 
 interface SurvivorView {
   model: PandaModel;
@@ -36,7 +52,13 @@ export class Renderer {
   private readonly hemi = new THREE.HemisphereLight(0xeaf7ff, 0x6f8f4a, 1.7);
   private readonly fog = new THREE.Fog(0xbfe8f7, 55, 130);
   private map: GameMap;
-  private world: WorldView;
+  private world: SceneWorld;
+  /** The open world's view (also `world`), or null on a normal map. */
+  private open: OpenWorldView | null = null;
+  private openMirror: WorldMirror | null = null;
+  private ghost: GhostSpec | null = null;
+  /** Survivor positions (x, z pairs) for the open world's gates. */
+  private readonly actorXZ = new Float32Array(16);
   private readonly horde = new HordeView();
   private pickups: PickupsView;
   private snow: Snowfall | null = null;
@@ -85,7 +107,7 @@ export class Renderer {
     shadow.normalBias = 0.03;
     this.scene.add(this.sun, this.sun.target);
 
-    this.world = buildWorld(map);
+    this.world = this.makeWorld(map);
     this.pickups = new PickupsView(map);
     this.effects = new Effects(map.terrain);
     this.scene.add(this.world.group, this.pickups.group, this.horde.group, this.effects.group);
@@ -136,11 +158,11 @@ export class Renderer {
     if (map === this.map) return;
     this.clearPlayers();
     this.scene.remove(this.world.group, this.pickups.group);
-    disposeObject(this.world.group);
+    this.world.dispose();
     disposeObject(this.pickups.group);
 
     this.map = map;
-    this.world = buildWorld(map);
+    this.world = this.makeWorld(map);
     this.pickups = new PickupsView(map);
     this.effects.reset(map.terrain);
     this.scene.add(this.world.group, this.pickups.group);
@@ -150,7 +172,45 @@ export class Renderer {
     this.snapCamera = true;
   }
 
+  /** A normal map is built whole; the open world streams (`open`) with its mirror and ghost carried over. */
+  private makeWorld(map: GameMap): SceneWorld {
+    if (map.open) {
+      const view = new OpenWorldView(map);
+      this.open = view;
+      // Only this world's mirror: one left over from another world would put its pieces here.
+      if (this.openMirror && this.openMirror.map.open?.seed === map.open.seed) view.setMirror(this.openMirror);
+      view.setGhost(this.ghost);
+      return view;
+    }
+    this.open = null;
+    const w = buildWorld(map);
+    return { group: w.group, update: (dt, time) => w.update(dt, time), dispose: () => disposeObject(w.group) };
+  }
+
+  /**
+   * Infinite mode: the world as every client knows it (pieces, depleted nodes, opened crates, loot bags).
+   * Set after setMap with the open world; null when the match ends.
+   */
+  setOpenMirror(m: WorldMirror | null): void {
+    this.openMirror = m;
+    if (!this.open) return;
+    const world = this.map.open;
+    this.open.setMirror(m && world && m.map.open?.seed === world.seed ? m : null);
+  }
+
+  /** Infinite mode's build preview on its tile (null: none). */
+  setGhost(g: GhostSpec | null): void {
+    this.ghost = g;
+    this.open?.setGhost(g);
+  }
+
   private applyTheme(): void {
+    if (this.open) {
+      // The open world's light follows the biome and the clock (applyOpenSky, every frame).
+      this.open.sky.reset();
+      this.applyOpenSky(0, this.map.layout.start.x, this.map.layout.start.z, OPEN_DEFAULT_TIME);
+      return;
+    }
     const t = this.map.layout.theme;
     (this.scene.background as THREE.Color).setHex(t.sky);
     this.fog.color.setHex(t.sky);
@@ -170,6 +230,31 @@ export class Renderer {
       this.snow.dispose();
       this.snow = null;
     }
+  }
+
+  /** The open world's light (biomes under the focus, time of day) into the scene; snowfall only in the snow. */
+  private applyOpenSky(dt: number, fx: number, fz: number, time: number): void {
+    if (!this.open) return;
+    const s = this.open.sky;
+    s.update(dt, fx, fz, time);
+    (this.scene.background as THREE.Color).copy(s.sky);
+    this.fog.color.copy(s.sky);
+    this.fog.near = s.fogNear;
+    this.fog.far = s.fogFar;
+    this.hemi.color.copy(s.hemiSky);
+    this.hemi.groundColor.copy(s.hemiGround);
+    this.hemi.intensity = s.hemiIntensity;
+    this.sun.color.copy(s.sun);
+    this.sun.intensity = s.sunIntensity;
+    if (s.snow > SNOW_ON && !this.snow) {
+      this.snow = new Snowfall();
+      this.scene.add(this.snow.points);
+    } else if (s.snow < SNOW_OFF && this.snow) {
+      this.scene.remove(this.snow.points);
+      this.snow.dispose();
+      this.snow = null;
+    }
+    this.snow?.setStrength(clamp((s.snow - SNOW_OFF) / 0.35, 0, 1));
   }
 
   setQuality(quality: Quality): void {
@@ -260,6 +345,9 @@ export class Renderer {
     let focus: { x: number; y: number; z: number } | null = null;
     let fallback: { x: number; y: number; z: number } | null = null;
     this.localPos = null;
+    // Infinite mode bleeds out slower (then you respawn at your bed).
+    const bleedTime = curr.open ? OPEN.bleedTime : DOWNED.bleedTime;
+    let actors = 0;
 
     for (const s of curr.survivors) {
       const v = this.views.get(s.id);
@@ -285,7 +373,12 @@ export class Renderer {
       });
 
       v.tag.sprite.position.set(x, y + (s.state === 'downed' ? 1.3 : 2.0), z);
-      v.tag.update(s.hp / SURVIVOR.maxHp, s.state === 'downed', s.bleed / DOWNED.bleedTime);
+      v.tag.update(s.hp / SURVIVOR.maxHp, s.state === 'downed', s.bleed / bleedTime);
+      if (actors * 2 < this.actorXZ.length) {
+        this.actorXZ[actors * 2] = x;
+        this.actorXZ[actors * 2 + 1] = z;
+        actors++;
+      }
 
       if (s.inWater) {
         v.ripple.visible = true;
@@ -303,7 +396,7 @@ export class Renderer {
 
     this.horde.update(dt, prev.zombies, curr.zombies, alpha, this.time, (zs, out) => this.zombieTint(zs, out));
     this.updateZombieTags(prev.zombies, curr.zombies, alpha);
-    this.pickups.update(this.time, prev, curr, alpha);
+    this.pickups.update(this.time, prev, curr, alpha, this.focus);
     this.effects.update(dt);
     if (curr.story) {
       if (!this.story) {
@@ -314,12 +407,22 @@ export class Renderer {
     }
 
     const f = focus ?? fallback;
+    if (this.open && this.snapCamera) {
+      // A new camera (match start, or a jump): ground right away under it, light without easing in.
+      const p = f ?? this.map.layout.goal;
+      this.open.prime(p.x, p.z);
+      this.open.sky.reset();
+    }
     if (f) this.updateCamera(dt, f.x, f.y, f.z);
     else {
       const { goal } = this.map.layout;
       this.updateCamera(dt, goal.x, this.map.terrain.heightAt(goal.x, goal.z), goal.z);
     }
-    this.world.update(dt, this.time);
+    if (this.open) {
+      this.applyOpenSky(dt, this.focus.x, this.focus.z, curr.open?.time ?? OPEN_DEFAULT_TIME);
+      this.open.setActors(this.actorXZ, actors);
+    }
+    this.world.update(dt, this.time, this.focus.x, this.focus.z);
     this.snow?.update(dt, this.time, this.focus.x, this.focus.y, this.focus.z);
   }
 
@@ -447,7 +550,7 @@ export class Renderer {
 
   updateShowcase(dt: number): void {
     this.time += dt;
-    this.world.update(dt, this.time);
+    this.world.update(dt, this.time, this.focus.x, this.focus.z);
     this.effects.update(dt);
     const m = this.showcase;
     if (!m) return;

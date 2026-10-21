@@ -1,4 +1,6 @@
-import { NET_SEND_EVERY, SIM_DT } from '../config';
+import { MAX_PLAYERS, NET_SEND_EVERY, SIM_DT } from '../config';
+import { WorldMirror } from '../sim/open/mirror';
+import type { OpenCommand, WorldJoin, WorldSave } from '../sim/open/types';
 import { Simulation, type SimOptions } from '../sim/Simulation';
 import type { GameEvent, PlayerInput, PlayerSpec, Snapshot } from '../sim/types';
 import { Presenter } from './Presenter';
@@ -13,6 +15,9 @@ export interface HostLink {
 /**
  * A match whose simulation runs on this device: single player, or the host of a multiplayer room.
  * Fixed 60 Hz simulation; rendering interpolates between the last two ticks.
+ *
+ * Infinite mode (`options.open`): the renderer and HUDs draw the world from a WorldMirror kept up to
+ * date with the simulation's world events, exactly like a guest's, so every device shows the same thing.
  */
 export class LocalGame implements Session {
   paused = false;
@@ -28,6 +33,8 @@ export class LocalGame implements Session {
   private ended = false;
   private sendCounter = 0;
   private pendingEvents: GameEvent[] = [];
+  /** Infinite mode: the world as the renderer and HUDs see it. */
+  private readonly mirror: WorldMirror | null = null;
 
   constructor(
     private readonly ctx: GameContext,
@@ -37,7 +44,8 @@ export class LocalGame implements Session {
     private readonly link: HostLink | null = null,
     options: SimOptions = {},
   ) {
-    this.sim = new Simulation(ctx.renderer.currentMap, specs, options);
+    const map = ctx.renderer.currentMap;
+    this.sim = new Simulation(map, specs, options);
     this.presenter = new Presenter(ctx, specs, localId);
     this.specs = specs.map((s) => ({ ...s }));
     this.remoteIds = specs.filter((s) => !s.bot && s.id !== localId).map((s) => s.id);
@@ -45,6 +53,14 @@ export class LocalGame implements Session {
     this.prev = this.curr;
     ctx.renderer.setPlayers(specs, localId);
     ctx.hud.setTeam(specs, localId);
+    // Taken after the first snapshot, so it already holds whatever setting up the world changed.
+    const join = options.open ? this.sim.joinWorld() : null;
+    if (join) {
+      this.mirror = new WorldMirror(map, join);
+      ctx.renderer.setOpenMirror(this.mirror);
+      ctx.hud.setOpenMirror(this.mirror);
+      ctx.openHud?.start(map, this.mirror, localId);
+    }
   }
 
   get isOver(): boolean {
@@ -67,9 +83,7 @@ export class LocalGame implements Session {
     const r = this.remoteIds.indexOf(spec.id);
     if (spec.bot && r >= 0) this.remoteIds.splice(r, 1);
     if (!spec.bot && r < 0 && spec.id !== this.localId) this.remoteIds.push(spec.id);
-    this.presenter.setSpecs(this.specs);
-    this.ctx.renderer.updateSpecs(this.specs, this.localId);
-    this.ctx.hud.setTeam(this.specs, this.localId);
+    this.refreshTeam(false);
   }
 
   /** A bot buddy's panda still in the game, for a player joining mid-match (a standing one if possible). */
@@ -86,11 +100,56 @@ export class LocalGame implements Session {
     return downed;
   }
 
+  /** Infinite mode: a guest drops into the world with a panda of their own (restored from the save by name). */
+  addSeat(spec: PlayerSpec): boolean {
+    if (!this.mirror || this.ended || this.specs.length >= MAX_PLAYERS || this.specs.some((s) => s.id === spec.id)) return false;
+    this.sim.addOpenSurvivor(spec);
+    this.specs.push({ ...spec });
+    if (!spec.bot && spec.id !== this.localId) this.remoteIds.push(spec.id);
+    this.refreshTeam(true);
+    return true;
+  }
+
+  /** Infinite mode: a guest left, and their panda leaves the world with them (the rules keep it for the save). */
+  removeSeat(id: string): void {
+    const i = this.specs.findIndex((s) => s.id === id);
+    if (!this.mirror || i < 0 || id === this.localId) return;
+    this.sim.removeSurvivor(id);
+    this.specs.splice(i, 1);
+    const r = this.remoteIds.indexOf(id);
+    if (r >= 0) this.remoteIds.splice(r, 1);
+    this.inputs.delete(id);
+    this.refreshTeam(true);
+  }
+
+  /** Infinite mode: the world as it is now, for a guest joining. */
+  joinWorld(): WorldJoin | null {
+    return this.mirror ? this.sim.joinWorld() : null;
+  }
+
+  /** Infinite mode: everything to store (`now`: epoch ms); null in other matches. */
+  saveWorld(now: number): WorldSave | null {
+    return this.mirror ? this.sim.saveWorld(now) : null;
+  }
+
+  /** Infinite mode: a build / craft command from the local player, or (host) from the guest playing panda `id`. */
+  command(cmd: OpenCommand): void;
+  command(id: string, cmd: OpenCommand): void;
+  command(a: string | OpenCommand, b?: OpenCommand): void {
+    if (!this.mirror || this.ended) return;
+    if (typeof a === 'string') {
+      if (b) this.sim.command(a, b);
+    } else {
+      this.sim.command(this.localId, a);
+    }
+  }
+
   /** Also called for a guest's request: the simulation checks it's still allowed. */
   requestEnd(): void {
     if (this.ended || !this.sim.endEarly()) return;
     this.prev = this.curr;
     this.curr = this.sim.snapshot();
+    this.mirror?.apply(this.curr.events);
     this.presenter.present(this.curr.events, this.curr);
     this.broadcast();
     this.ended = true;
@@ -115,6 +174,8 @@ export class LocalGame implements Session {
         this.prev = this.curr;
         this.curr = this.sim.snapshot();
         this.acc -= SIM_DT;
+        // The world changes first, so what the presenter's effects and messages refer to is already drawn.
+        this.mirror?.apply(this.curr.events);
         this.presenter.present(this.curr.events, this.curr);
         this.broadcast();
         if (this.curr.phase !== 'playing') {
@@ -126,6 +187,7 @@ export class LocalGame implements Session {
 
     renderer.updateGame(frozen ? 0 : dt, this.prev, this.curr, frozen ? 1 : this.acc / SIM_DT, this.localId);
     hud.update(this.curr, fps);
+    if (this.mirror) this.ctx.openHud?.update(this.curr);
     this.ctx.story?.update(this.curr, frozen ? 0 : dt);
     const me = this.curr.survivors.find((s) => s.id === this.localId);
     input.setCrackerCount(me?.crackers ?? 0);
@@ -135,6 +197,21 @@ export class LocalGame implements Session {
   dispose(): void {
     this.sim.dispose();
     this.ctx.renderer.clearPlayers();
+    if (this.mirror) {
+      this.ctx.openHud?.stop();
+      this.ctx.renderer.setGhost(null);
+      this.ctx.renderer.setOpenMirror(null);
+      this.ctx.hud.setOpenMirror(null);
+      this.ctx.input.setBuildMode(false);
+    }
+  }
+
+  /** The team changed: `added` when pandas joined or left the world (new models), not just changed hands. */
+  private refreshTeam(added: boolean): void {
+    this.presenter.setSpecs(this.specs);
+    if (added) this.ctx.renderer.setPlayers(this.specs, this.localId);
+    else this.ctx.renderer.updateSpecs(this.specs, this.localId);
+    this.ctx.hud.setTeam(this.specs, this.localId);
   }
 
   private broadcast(): void {

@@ -1,3 +1,4 @@
+import type { OpenSnap, Resources } from '../sim/open/types';
 import {
   WEAPON_TYPES,
   type CrackerDropSnap,
@@ -34,19 +35,93 @@ export interface EncodedSnapshot {
   b: string;
   rk: number[];
   e: GameEvent[];
+  /** Infinite mode only. */
+  o?: EncodedOpen;
+}
+
+/** Snapshot.open on the wire. Resources are [bamboo, wood, stone, scrap]. */
+export interface EncodedOpen {
+  dy: number;
+  /** Time of day 0..1. */
+  t: number;
+  /** 1 at night. */
+  n: number;
+  /** Per panda: [id, hunger, bamboo, wood, stone, scrap, respawn, bed]. */
+  s: (string | number)[][];
+  st: number[];
+  /** Siege: [x, z, tx, tz, eta, size, base 1/0], or empty with none. */
+  sg: number[];
+  /** Visible hordes: [x, z, n]. */
+  h: number[][];
+  l: string[];
 }
 
 const PHASES: readonly MatchPhase[] = ['playing', 'won', 'lost'];
 const SURVIVOR_STATES: readonly SurvivorState[] = ['active', 'downed', 'rescued', 'dead'];
 const ZOMBIE_STATES: readonly ZombieState[] = ['walk', 'bite', 'lunge', 'stun', 'dying', 'sleep', 'wake'];
 
+/** Infinite mode: a guest only gets the zombies, javelins and firecrackers this close to their panda. */
+export const INTEREST_RANGE = 110;
+const INTEREST_R2 = INTEREST_RANGE * INTEREST_RANGE;
+
+const r1 = (v: number) => Math.round(v * 10) / 10;
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 const n = (v: unknown) => (typeof v === 'number' ? v : 0);
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 
-export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
+const encodeRes = (r: Resources): number[] => [r1(r.bamboo), r1(r.wood), r1(r.stone), r1(r.scrap)];
+const decodeRes = (a: readonly unknown[], i: number): Resources => ({ bamboo: n(a[i]), wood: n(a[i + 1]), stone: n(a[i + 2]), scrap: n(a[i + 3]) });
+
+function encodeOpen(o: OpenSnap): EncodedOpen {
+  const g = o.siege;
+  return {
+    dy: o.day,
+    t: Math.round(o.time * 10000) / 10000,
+    n: o.night ? 1 : 0,
+    s: o.survivors.map((v) => [v.id, r1(v.hunger), ...encodeRes(v.pack), r1(v.respawn), v.bed]),
+    st: encodeRes(o.stash),
+    sg: g ? [r1(g.x), r1(g.z), r1(g.tx), r1(g.tz), r1(g.eta), g.size, g.base ? 1 : 0] : [],
+    h: o.hordes.map((v) => [Math.round(v.x), Math.round(v.z), v.n]),
+    l: o.leash,
+  };
+}
+
+function decodeOpen(o: EncodedOpen): OpenSnap {
+  const g = Array.isArray(o.sg) && o.sg.length >= 7 ? o.sg : null;
+  return {
+    day: Math.max(1, n(o.dy)),
+    time: n(o.t),
+    night: o.n === 1,
+    survivors: (Array.isArray(o.s) ? o.s : []).map((a) => ({
+      id: str(a[0]),
+      hunger: n(a[1]),
+      pack: decodeRes(a, 2),
+      respawn: n(a[6]),
+      bed: typeof a[7] === 'number' ? n(a[7]) : -1,
+    })),
+    stash: decodeRes(Array.isArray(o.st) ? o.st : [], 0),
+    siege: g ? { x: n(g[0]), z: n(g[1]), tx: n(g[2]), tz: n(g[3]), eta: n(g[4]), size: n(g[5]), base: g[6] === 1 } : null,
+    hordes: (Array.isArray(o.h) ? o.h : []).map((a) => ({ x: n(a[0]), z: n(a[1]), n: n(a[2]) })),
+    leash: Array.isArray(o.l) ? o.l.filter((v): v is string => typeof v === 'string') : [],
+  };
+}
+
+/**
+ * `near`: only zombies, javelins and firecrackers within INTEREST_RANGE of this point go in (infinite
+ * mode encodes once per guest, around their panda: the world is too big to send everything to everyone).
+ * Survivors always go in full.
+ */
+export function encodeSnapshot(s: Snapshot, near: { x: number; z: number } | null = null): EncodedSnapshot {
   const bamboo = s.bamboo.map((on) => (on ? '1' : '0')).join('');
+  const p = near;
+  const close: (v: { x: number; z: number }) => boolean = p
+    ? (v) => (v.x - p.x) * (v.x - p.x) + (v.z - p.z) * (v.z - p.z) <= INTEREST_R2
+    : () => true;
+  const zombies = p ? s.zombies.filter(close) : s.zombies;
+  const javelins = p ? s.javelins.filter(close) : s.javelins;
+  const crackers = p ? s.crackers.filter(close) : s.crackers;
+  const crackerDrops = p ? s.crackerDrops.filter(close) : s.crackerDrops;
   return {
     k: s.tick,
     tl: r2(s.timeLeft),
@@ -73,7 +148,7 @@ export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
       v.crackers,
       v.other ? WEAPON_TYPES.indexOf(v.other) : -1,
     ]),
-    z: s.zombies.map((v) => [
+    z: zombies.map((v) => [
       v.id,
       r2(v.x),
       r2(v.y),
@@ -86,12 +161,13 @@ export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
       r2(v.hurt),
       v.from ?? '',
     ]),
-    j: s.javelins.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z), r2(v.yaw), r2(v.pitch), v.flying ? 1 : 0]),
-    c: s.crackers.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z), v.flying ? 1 : 0]),
-    d: s.crackerDrops.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z)]),
+    j: javelins.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z), r2(v.yaw), r2(v.pitch), v.flying ? 1 : 0]),
+    c: crackers.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z), v.flying ? 1 : 0]),
+    d: crackerDrops.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z)]),
     b: bamboo,
     rk: s.racks.map((w) => (w ? WEAPON_TYPES.indexOf(w) : -1)),
     e: s.events,
+    o: s.open ? encodeOpen(s.open) : undefined,
   };
 }
 
@@ -157,5 +233,6 @@ export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
     bamboo,
     racks: (e.rk ?? []).map((w) => WEAPON_TYPES[w] ?? null),
     events: Array.isArray(e.e) ? e.e : [],
+    open: e.o && typeof e.o === 'object' ? decodeOpen(e.o) : undefined,
   };
 }

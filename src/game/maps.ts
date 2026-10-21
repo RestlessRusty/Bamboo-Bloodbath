@@ -1,6 +1,8 @@
 import { createGameMap, type GameMap } from '../sim/gameMap';
 import type { MapLayout, MapRef } from '../sim/mapLayout';
 import { layoutFor, MAP_IDS, mapInfo, newRef, previewRef } from '../sim/maps';
+import { OPEN_MAP_ID } from '../sim/open/config';
+import { createOpenWorld } from '../sim/open/worldgen';
 
 /** A map choice in the picker: a map id, or "random". */
 export type MapPick = string;
@@ -38,15 +40,27 @@ export function previewMap(pick: MapPick): GameMap | null {
 const cache = new Map<string, GameMap>();
 const CACHE_SIZE = 4;
 
-/** Builds (or reuses) the full map for a ref. Generating a map takes a moment, so keep a few. */
+/** The ref of infinite-mode world `seed` (never offered in the map picker or previewed in menus). */
+export function openRef(seed: number): MapRef {
+  return { id: OPEN_MAP_ID, seed };
+}
+
+/**
+ * Builds (or reuses) the full map for a ref. Generating a map takes a moment, so keep a few.
+ * An infinite-mode world is one entry like any map, but at most one of them is kept: they're big.
+ */
 export function loadMap(ref: MapRef): GameMap {
-  const layout: MapLayout = layoutFor(ref);
-  const key = `${layout.id}:${layout.seed}`;
+  const open = ref.id === OPEN_MAP_ID;
+  const layout: MapLayout | null = open ? null : layoutFor(ref);
+  const key = layout ? `${layout.id}:${layout.seed}` : `${OPEN_MAP_ID}:${ref.seed}`;
   let map = cache.get(key);
   if (map) {
     cache.delete(key); // re-insert as most recently used
   } else {
-    map = createGameMap(layout);
+    if (open) {
+      for (const k of [...cache.keys()]) if (k.startsWith(`${OPEN_MAP_ID}:`)) cache.delete(k);
+    }
+    map = layout ? createGameMap(layout) : createOpenWorld(ref.seed);
     if (cache.size >= CACHE_SIZE) cache.delete(cache.keys().next().value as string);
   }
   cache.set(key, map);

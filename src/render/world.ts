@@ -4,8 +4,10 @@ import { GOAL_RADIUS } from '../config';
 import { lerp, smoothstep, valueNoise } from '../core/math';
 import { Rng } from '../core/rng';
 import type { GameMap } from '../sim/gameMap';
+import type { MapTheme } from '../sim/mapLayout';
 import type { DecorProp, RockProp, StalkProp, TreeProp } from '../sim/props';
 import type { RiverShape } from '../sim/river';
+import type { Terrain } from '../sim/terrain';
 import { buildRoads, buildStoryBuilding } from './storyBuildings';
 import { addOutline, outlineMaterial, toon, toonInstanced } from './toon';
 
@@ -67,11 +69,11 @@ function instanced<T>(
   return mesh;
 }
 
-const pickHex = (palette: readonly number[], t: number) => palette[Math.min(palette.length - 1, Math.floor(t * palette.length))];
+export const pickHex = (palette: readonly number[], t: number) => palette[Math.min(palette.length - 1, Math.floor(t * palette.length))];
 
 // ---------------------------------------------------------------- terrain
 
-/** Ground colours of a map, ready for blending. */
+/** Ground colours of a map (or of one theme of it: the open world's biomes), ready for blending. */
 export class GroundPalette {
   readonly a: THREE.Color;
   readonly b: THREE.Color;
@@ -85,8 +87,8 @@ export class GroundPalette {
   /** Height where hilltop colouring is complete. */
   readonly peak: number;
 
-  constructor(map: GameMap) {
-    const g = map.layout.theme.ground;
+  constructor(map: GameMap, theme: MapTheme = map.layout.theme) {
+    const g = theme.ground;
     this.a = new THREE.Color(g.a);
     this.b = new THREE.Color(g.b);
     this.high = new THREE.Color(g.high);
@@ -298,10 +300,9 @@ function buildWater(map: GameMap): THREE.Group {
   }
   if (!map.props.lilies.length) return g;
 
-  const padGeo = new THREE.CircleGeometry(0.55, 12, 0.5, Math.PI * 2 - 0.9).rotateX(-Math.PI / 2);
   g.add(
     instanced<DecorProp>(
-      padGeo,
+      lilyPadGeo(),
       map.props.lilies,
       (l, o) => {
         o.position.set(l.x, map.terrain.waterLevel + 0.02, l.z);
@@ -345,7 +346,7 @@ function riverGeometry(river: RiverShape, y: number): THREE.BufferGeometry {
 
 // ---------------------------------------------------------------- bridges & fords
 
-function buildCrossings(map: GameMap): THREE.Group {
+export function buildCrossings(map: GameMap): THREE.Group {
   const g = new THREE.Group();
   const terrain = map.terrain;
 
@@ -420,7 +421,12 @@ function buildCrossings(map: GameMap): THREE.Group {
 
 // ---------------------------------------------------------------- trees & rocks
 
-function roundFoliageGeo(): THREE.BufferGeometry {
+/** Tree trunk, standing on y = 0 (every tree kind shares it). */
+export function trunkGeo(): THREE.BufferGeometry {
+  return new THREE.CylinderGeometry(0.22, 0.32, 2.6, 7).translate(0, 1.3, 0);
+}
+
+export function roundFoliageGeo(): THREE.BufferGeometry {
   const blobs: [number, number, number, number][] = [
     [0, 3.2, 0, 1.55],
     [0.85, 2.7, 0.35, 1.1],
@@ -430,7 +436,7 @@ function roundFoliageGeo(): THREE.BufferGeometry {
   return mergeGeometries(blobs.map(([x, y, z, r]) => new THREE.IcosahedronGeometry(r, 0).translate(x, y, z)))!;
 }
 
-function pineFoliageGeo(): THREE.BufferGeometry {
+export function pineFoliageGeo(): THREE.BufferGeometry {
   const tiers: [number, number, number][] = [
     [2.0, 1.7, 2.3],
     [1.5, 1.6, 3.2],
@@ -447,10 +453,9 @@ function buildTrees(map: GameMap): THREE.Object3D[] {
     o.rotation.y = t.rot;
     o.scale.setScalar(t.scale);
   };
-  const trunkGeo = new THREE.CylinderGeometry(0.22, 0.32, 2.6, 7).translate(0, 1.3, 0);
   const pines = all.filter((t) => t.kind === 'pine');
   const meshes = [
-    instanced(trunkGeo, all, place, (_t, c) => c.setHex(theme.trunk)),
+    instanced(trunkGeo(), all, place, (_t, c) => c.setHex(theme.trunk)),
     instanced(roundFoliageGeo(), all.filter((t) => t.kind === 'round'), place, (t, c) => c.setHex(pickHex(theme.roundLeaves, t.tint))),
     instanced(pineFoliageGeo(), pines, place, (t, c) => c.setHex(pickHex(theme.pineLeaves, t.tint))),
   ];
@@ -461,7 +466,7 @@ function buildTrees(map: GameMap): THREE.Object3D[] {
 }
 
 /** White tips over the upper part of each pine tier. */
-function pineSnowGeo(): THREE.BufferGeometry {
+export function pineSnowGeo(): THREE.BufferGeometry {
   // [radius, height, centre y]: each a bit wider than its tier at that height (see pineFoliageGeo).
   const caps: [number, number, number][] = [
     [0.95, 0.75, 2.775],
@@ -472,11 +477,11 @@ function pineSnowGeo(): THREE.BufferGeometry {
 }
 
 /** Different boulder shapes per map; each is one instanced batch. */
-const BOULDER_SHAPES = 3;
+export const BOULDER_SHAPES = 3;
 /** Ground level of a raw boulder before it's normalised: the widest part sits just above it. */
 const BOULDER_SINK = -0.2;
 
-interface BoulderGeo {
+export interface BoulderGeo {
   body: THREE.BufferGeometry;
   /** Just the facets facing up, for a cap of moss or snow. */
   cap: THREE.BufferGeometry | null;
@@ -489,7 +494,7 @@ interface BoulderGeo {
  * facets. Normalised so the ground is at y = 0, the top at y = 1 and the widest part that shows has
  * radius 1, so a rock's `scale` and `height` are exactly what you see (and what you bump into).
  */
-function boulderGeometry(seed: number): BoulderGeo {
+export function boulderGeometry(seed: number): BoulderGeo {
   const rng = new Rng(seed);
   const body = new THREE.IcosahedronGeometry(1, 1); // not indexed: every facet has its own corners
   const pos = body.getAttribute('position') as THREE.BufferAttribute;
@@ -552,15 +557,38 @@ function boulderGeometry(seed: number): BoulderGeo {
   return { body, cap, outline };
 }
 
+const rockUp = new THREE.Vector3();
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+
+/**
+ * Where a boulder sits: leaning with the slope, a little for boulders out in the open, more for scree
+ * on the ridge flanks. Returns a shared matrix: use it before the next call.
+ */
+export function rockMatrix(terrain: Terrain, r: RockProp): THREE.Matrix4 {
+  const e = 0.6;
+  const gx = (terrain.heightAt(r.x + e, r.z) - terrain.heightAt(r.x - e, r.z)) / (2 * e);
+  const gz = (terrain.heightAt(r.x, r.z + e) - terrain.heightAt(r.x, r.z - e)) / (2 * e);
+  const lean = r.radius > 0 ? 0.3 : 0.55;
+  const tilt = Math.min(lean, 0.6 / (Math.hypot(gx, gz) || 1)); // never more than ~30°
+  rockUp.set(-gx * tilt, 1, -gz * tilt).normalize();
+  tmpObj.position.set(r.x, r.y - r.height * (0.06 + 0.3 * Math.min(1, Math.hypot(gx, gz))), r.z);
+  tmpObj.quaternion.setFromUnitVectors(Y_AXIS, rockUp);
+  tmpObj.rotateY(r.rot);
+  tmpObj.scale.set(r.scale, r.height, r.scale);
+  tmpObj.updateMatrix();
+  return tmpObj.matrix;
+}
+
+/** Which of the BOULDER_SHAPES a rock is drawn with. */
+export const rockShape = (r: RockProp) => Math.min(BOULDER_SHAPES - 1, Math.floor(((r.tint * 7.31) % 1) * BOULDER_SHAPES));
+
 /** Solid boulders plus the loose stones (pebbles, scree), leaning with the ground, outlined in ink. */
 function buildRocks(map: GameMap): THREE.Object3D[] {
   const { theme, seed } = map.layout;
   const terrain = map.terrain;
   const shapes = Array.from({ length: BOULDER_SHAPES }, (_, i) => boulderGeometry(seed + 101 + i * 7919));
   const buckets: RockProp[][] = shapes.map(() => []);
-  for (const r of [...map.props.rocks, ...map.props.stones]) {
-    buckets[Math.min(BOULDER_SHAPES - 1, Math.floor(((r.tint * 7.31) % 1) * BOULDER_SHAPES))].push(r);
-  }
+  for (const r of [...map.props.rocks, ...map.props.stones]) buckets[rockShape(r)].push(r);
   // Snow on every rock on snowy maps; elsewhere moss on about half of them.
   const snowy = !!theme.snowCaps;
   const capped = (r: RockProp) => snowy || (r.tint * 13.7) % 1 < 0.5;
@@ -573,24 +601,6 @@ function buildRocks(map: GameMap): THREE.Object3D[] {
   capMat.polygonOffsetFactor = -1;
   capMat.polygonOffsetUnits = -2;
 
-  const up = new THREE.Vector3();
-  const yAxis = new THREE.Vector3(0, 1, 0);
-  const place = (r: RockProp) => {
-    // Lean with the slope: a little for boulders out in the open, more for scree on the ridge flanks.
-    const e = 0.6;
-    const gx = (terrain.heightAt(r.x + e, r.z) - terrain.heightAt(r.x - e, r.z)) / (2 * e);
-    const gz = (terrain.heightAt(r.x, r.z + e) - terrain.heightAt(r.x, r.z - e)) / (2 * e);
-    const lean = r.radius > 0 ? 0.3 : 0.55;
-    const tilt = Math.min(lean, 0.6 / (Math.hypot(gx, gz) || 1)); // never more than ~30°
-    up.set(-gx * tilt, 1, -gz * tilt).normalize();
-    tmpObj.position.set(r.x, r.y - r.height * (0.06 + 0.3 * Math.min(1, Math.hypot(gx, gz))), r.z);
-    tmpObj.quaternion.setFromUnitVectors(yAxis, up);
-    tmpObj.rotateY(r.rot);
-    tmpObj.scale.set(r.scale, r.height, r.scale);
-    tmpObj.updateMatrix();
-    return tmpObj.matrix;
-  };
-
   const meshes: THREE.Object3D[] = [];
   shapes.forEach((shape, i) => {
     const items = buckets[i];
@@ -601,7 +611,7 @@ function buildRocks(map: GameMap): THREE.Object3D[] {
     const cap = shape.cap && caps.length ? new THREE.InstancedMesh(shape.cap, capMat, caps.length) : null;
     let c = 0;
     items.forEach((r, k) => {
-      const m = place(r);
+      const m = rockMatrix(terrain, r);
       body.setMatrixAt(k, m);
       ink.setMatrixAt(k, m);
       body.setColorAt(k, tmpColor.setHex(pickHex(theme.rocks, r.tint)));
@@ -631,7 +641,16 @@ function buildRocks(map: GameMap): THREE.Object3D[] {
 
 // ---------------------------------------------------------------- bamboo
 
-function leafTuftGeo(): THREE.BufferGeometry {
+/** A bamboo stalk 1 m tall (scaled to its height), its rings, and the leaf tufts at the top. */
+export function stalkGeo(): THREE.BufferGeometry {
+  return new THREE.CylinderGeometry(0.07, 0.09, 1, 6).translate(0, 0.5, 0);
+}
+
+export function stalkRingGeo(): THREE.BufferGeometry {
+  return new THREE.CylinderGeometry(0.1, 0.1, 0.06, 6);
+}
+
+export function leafTuftGeo(): THREE.BufferGeometry {
   const leaves: THREE.BufferGeometry[] = [];
   for (let k = 0; k < 5; k++) {
     leaves.push(
@@ -693,7 +712,7 @@ function buildBamboo(map: GameMap): THREE.Object3D[] {
 
   return [
     instanced(
-      new THREE.CylinderGeometry(0.07, 0.09, 1, 6).translate(0, 0.5, 0),
+      stalkGeo(),
       stalks,
       (s, o) => {
         base(s, o);
@@ -702,7 +721,7 @@ function buildBamboo(map: GameMap): THREE.Object3D[] {
       (s, c) => c.setHex(pickHex(theme.stalks, s.tint)),
     ),
     instanced(
-      new THREE.CylinderGeometry(0.1, 0.1, 0.06, 6),
+      stalkRingGeo(),
       nodes,
       (n, o) => {
         base(n.s, o);
@@ -727,18 +746,32 @@ function buildBamboo(map: GameMap): THREE.Object3D[] {
 
 // ---------------------------------------------------------------- grass & flowers
 
-function buildDecor(map: GameMap): THREE.Object3D[] {
-  const { theme } = map.layout;
+/** Three blades of grass in a tuft. */
+export function grassGeo(): THREE.BufferGeometry {
   const blades = [-0.35, 0, 0.35].map((tilt, i) =>
     new THREE.ConeGeometry(0.07, 0.5, 3)
       .translate(0, 0.25, 0)
       .rotateZ(tilt)
       .translate((i - 1) * 0.06, 0, (i % 2) * 0.05),
   );
-  const flowerHead = new THREE.SphereGeometry(0.11, 6, 4).scale(1, 0.6, 1).translate(0, 0.12, 0);
+  return mergeGeometries(blades)!;
+}
+
+export function flowerGeo(): THREE.BufferGeometry {
+  return new THREE.SphereGeometry(0.11, 6, 4).scale(1, 0.6, 1).translate(0, 0.12, 0);
+}
+
+/** A lily pad with a notch, lying flat. */
+export function lilyPadGeo(): THREE.BufferGeometry {
+  return new THREE.CircleGeometry(0.55, 12, 0.5, Math.PI * 2 - 0.9).rotateX(-Math.PI / 2);
+}
+
+function buildDecor(map: GameMap): THREE.Object3D[] {
+  const { theme } = map.layout;
+  const flowerHead = flowerGeo();
   return [
     instanced<DecorProp>(
-      mergeGeometries(blades)!,
+      grassGeo(),
       map.props.grass,
       (g, o) => {
         o.position.set(g.x, g.y - 0.02, g.z);
@@ -763,9 +796,16 @@ function buildDecor(map: GameMap): THREE.Object3D[] {
 
 // ---------------------------------------------------------------- start camp
 
-function buildCamp(map: GameMap): { group: THREE.Group; update(time: number): void } {
+/**
+ * The start camp: tent, crates, a signpost and a campfire (`fire`: where it burns). The sign points at
+ * `toward`, by default the way out of camp (first waypoint, or the hut).
+ */
+export function buildCamp(
+  map: GameMap,
+  toward?: { x: number; z: number },
+): { group: THREE.Group; update(time: number): void; fire: THREE.Vector3 } {
   const { start } = map.layout;
-  const goal = map.route.pts[1]; // the way out of camp: first waypoint, or the hut
+  const goal = toward ?? map.route.pts[1];
   const g = new THREE.Group();
   // Offsets below are laid out for a way out to the north-east (+X, -Z); turn them towards the real one.
   const turn = Math.atan2(goal.z - start.z, goal.x - start.x) - Math.atan2(-1, 1);
@@ -834,6 +874,7 @@ function buildCamp(map: GameMap): { group: THREE.Group; update(time: number): vo
 
   return {
     group: g,
+    fire: firePos,
     update(time) {
       const f = 1 + Math.sin(time * 17) * 0.08 + Math.sin(time * 23) * 0.06;
       flameOuter.scale.set(1, f, 1);

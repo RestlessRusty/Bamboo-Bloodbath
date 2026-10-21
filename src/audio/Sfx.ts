@@ -25,7 +25,21 @@ export type SfxName =
   | 'pop'
   | 'bang'
   | 'win'
-  | 'lose';
+  | 'lose'
+  // Infinite mode.
+  | 'build'
+  | 'gatherWood'
+  | 'gatherStone'
+  | 'gatherBamboo'
+  | 'gatherScrap'
+  | 'chomp'
+  | 'smash'
+  | 'crafted'
+  | 'deposit'
+  | 'deny'
+  | 'siegeHorn'
+  | 'dawn'
+  | 'dusk';
 
 /** How far away (metres) a sound can still be heard. */
 const HEARING = 38;
@@ -228,7 +242,101 @@ export class Sfx {
       case 'lose':
         [392, 370, 349, 294].forEach((f, i) => this.tone('triangle', f, f * 0.98, i === 3 ? 0.8 : 0.3, 0.3, out, i * 0.32));
         break;
+      case 'build':
+        // Two hammer knocks on wood.
+        for (let i = 0; i < 2; i++) {
+          this.tone('triangle', r(380, 440), 260, 0.07, 0.35, out, i * 0.13);
+          this.sweep('lowpass', 1500, 500, 1, 0.06, 0.45, out, i * 0.13);
+        }
+        break;
+      case 'gatherWood':
+        // A dull thunk into a trunk.
+        this.sweep('bandpass', 800, 300, 2, 0.12, 0.6, out);
+        this.tone('sine', r(170, 200), 90, 0.12, 0.4, out);
+        break;
+      case 'gatherStone':
+        // Pick on rock: a bright clink and grit.
+        this.tone('square', r(1400, 1700), 1250, 0.05, 0.1, out);
+        this.tone('triangle', r(2300, 2600), 2100, 0.09, 0.14, out);
+        this.sweep('highpass', 3200, 1500, 1, 0.07, 0.35, out);
+        break;
+      case 'gatherBamboo':
+        // Hollow "tok" of a bamboo cane.
+        this.tone('sine', r(650, 760), 520, 0.09, 0.45, out);
+        this.tone('sine', 1050, 800, 0.06, 0.18, out, 0.02);
+        break;
+      case 'gatherScrap':
+        // Rattling tin.
+        for (let i = 0; i < 3; i++) this.tone('square', r(900, 1500), r(600, 900), 0.04, 0.07, out, i * 0.05);
+        this.sweep('bandpass', 3200, 1900, 6, 0.16, 0.3, out);
+        break;
+      case 'chomp':
+        // A zombie gnawing on a wall.
+        this.sweep('lowpass', 1800, 400, 1, 0.1, 0.6, out);
+        this.tone('sine', 140, 70, 0.12, 0.3, out);
+        break;
+      case 'smash':
+        // A piece collapsing: a crash, then clattering bits.
+        this.sweep('lowpass', 2600, 150, 0.9, 0.7, 0.8, out);
+        this.tone('sine', 110, 40, 0.5, 0.6, out);
+        for (let i = 0; i < 3; i++) this.sweep('bandpass', r(900, 1800), 500, 3, 0.08, 0.3, out, 0.2 + i * 0.11);
+        break;
+      case 'crafted':
+        this.tone('triangle', 784, 784, 0.1, 0.25, out);
+        this.tone('triangle', 1175, 1175, 0.22, 0.25, out, 0.09);
+        this.sweep('highpass', 4000, 7000, 1, 0.25, 0.12, out, 0.09);
+        break;
+      case 'deposit':
+        // Stuff tumbling into a chest, and a lid knock.
+        for (let i = 0; i < 3; i++) this.sweep('lowpass', 1300, 450, 1, 0.07, 0.4, out, i * 0.07);
+        this.tone('triangle', 330, 220, 0.12, 0.3, out, 0.25);
+        break;
+      case 'deny':
+        this.tone('square', 190, 170, 0.1, 0.1, out);
+        this.tone('square', 150, 135, 0.14, 0.1, out, 0.13);
+        break;
+      case 'siegeHorn':
+        // Two long, low horn blasts, the second one higher.
+        this.horn(98, 1.3, 0.45, out);
+        this.horn(131, 1.6, 0.5, out, 1.45);
+        break;
+      case 'dawn':
+        // A soft rising arpeggio and a couple of birds.
+        [392, 523, 659, 784].forEach((f, i) => this.tone('triangle', f, f, 0.35, 0.16, out, i * 0.14));
+        this.tone('sine', 2400, 3300, 0.07, 0.08, out, 0.75);
+        this.tone('sine', 2600, 3500, 0.06, 0.07, out, 0.9);
+        break;
+      case 'dusk':
+        // Falling notes, then an owl.
+        [659, 523, 440, 330].forEach((f, i) => this.tone('triangle', f, f * 0.99, 0.4, 0.14, out, i * 0.18));
+        this.tone('sine', 430, 380, 0.28, 0.12, out, 1.0);
+        this.tone('sine', 410, 360, 0.4, 0.12, out, 1.35);
+        break;
     }
+  }
+
+  /** A brassy horn note: sawtooth through a low-pass that opens slowly, with a soft attack. */
+  private horn(freq: number, dur: number, vol: number, out: AudioNode, delay = 0): void {
+    const ctx = this.ctx!;
+    const t = ctx.currentTime + delay;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(freq * 0.94, t);
+    osc.frequency.linearRampToValueAtTime(freq, t + 0.25);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(250, t);
+    filter.frequency.linearRampToValueAtTime(900, t + dur * 0.6);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.25);
+    g.gain.setValueAtTime(vol, t + dur * 0.7);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(filter);
+    filter.connect(g);
+    g.connect(out);
+    osc.start(t);
+    osc.stop(t + dur + 0.05);
   }
 
   private env(gain: GainNode, start: number, dur: number, vol: number): void {

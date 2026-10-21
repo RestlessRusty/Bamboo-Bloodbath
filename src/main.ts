@@ -1,8 +1,8 @@
 import './style.css';
 import { Sfx } from './audio/Sfx';
-import { DIFFICULTY, MATCH_TIME, type Difficulty } from './config';
+import { DIFFICULTY, MATCH_TIME, MAX_PLAYERS, type Difficulty } from './config';
 import { LocalGame } from './game/LocalGame';
-import { cyclePick, hutDirection, isMapRef, isValidPick, loadMap, previewMap, resolvePick } from './game/maps';
+import { cyclePick, hutDirection, isMapRef, isValidPick, loadMap, openRef, previewMap, resolvePick } from './game/maps';
 import { RemoteGame } from './game/RemoteGame';
 import type { GameContext, Session } from './game/Session';
 import { InputManager, requestTiltPermission } from './input/InputManager';
@@ -11,13 +11,19 @@ import { NetClient } from './net/NetClient';
 import { NetHost } from './net/NetHost';
 import type { LobbyPlayer } from './net/protocol';
 import { forgetRoom, markInRoom, ownRoomCode, rejoinableRoom, seatFor } from './net/rooms';
+import { deleteWorld, listWorlds, loadWorld, storeWorld, worldInfo } from './openSaves';
 import { Renderer } from './render/Renderer';
 import { addResult } from './records';
 import { loadSettings, saveSettings } from './settings';
 import { botName } from './sim/bots';
 import type { MapRef } from './sim/mapLayout';
 import { DEFAULT_MAP, refOf } from './sim/maps';
+import { OPEN } from './sim/open/config';
+import { OpenRules } from './sim/open/rules';
+import { botSpecsFor, newWorldSave, randomWorldSeed, sanitizeSave } from './sim/open/save';
+import type { RoomMode, WorldSave, WorldSlotInfo } from './sim/open/types';
 import { initPhysics } from './sim/physics';
+import type { SimOptions } from './sim/Simulation';
 import { CHAPTERS } from './sim/story/chapters';
 import { chapterOptions, DOC_SPEC, hasDoc } from './sim/story/Mission';
 import type { Card } from './sim/story/types';
@@ -27,8 +33,10 @@ import { el, formatTime } from './ui/dom';
 import { HowToPlay } from './ui/HowToPlay';
 import { InstallPrompt, isInstalled } from './ui/InstallPrompt';
 import { Hud, type EndMode } from './ui/Hud';
+import { InfiniteMenu } from './ui/InfiniteMenu';
 import { Lobby } from './ui/Lobby';
 import { Menu } from './ui/Menu';
+import { OpenHud } from './ui/OpenHud';
 import { QuickPlayMenu } from './ui/QuickPlayMenu';
 import { RecordsCard } from './ui/RecordsCard';
 import { SettingsPanel, type SettingKey } from './ui/SettingsPanel';
@@ -82,6 +90,10 @@ const progress = loadProgress(CHAPTERS.length);
 let match: { mapId: string; difficulty: Difficulty; bots: number } | null = null;
 /** Story chapter being played, and where a retry starts (stage and the clock at that point). */
 let run: { chapter: number; checkpoint: number; clock: number | null } | null = null;
+/** The infinite-mode world this device runs (solo or host), by save slot: it's saved now and then, and on leaving. */
+let openWorld: { slot: number } | null = null;
+/** Seconds of play until the next autosave of `openWorld`. */
+let autosaveIn = OPEN.autosave;
 
 const input = new InputManager(uiEl, {
   screenToGround: (x, y) => renderer.screenToGround(x, y),
@@ -134,10 +146,23 @@ const hud = new Hud(uiEl, {
   onEndMatch: () => session?.requestEnd(),
 });
 
+const openHud = new OpenHud(uiEl, {
+  onCommand: (cmd) => session?.command(cmd),
+  onGhost: (g) => renderer.setGhost(g),
+  onBuildMode: (on) => input.setBuildMode(on),
+});
+// Infinite mode's build keys (build mode, rotate, place…) drive the build HUD.
+input.onBuildKey = (key) => openHud.key(key);
+
 const menu = new Menu(uiEl, settings, {
   onStory: () => {
     unlockAudio();
     openStory();
+  },
+  onInfinite: () => {
+    unlockAudio();
+    menu.hide();
+    infiniteMenu.show(listWorlds());
   },
   onQuickPlay: () => {
     unlockAudio();
@@ -192,7 +217,28 @@ const lobby = new Lobby(uiEl, {
     saveSettings(settings);
     host.setDifficulty(difficulty);
   },
+  onMode: (m) => setRoomMode(m),
+  onWorld: (dir) => cycleRoomWorld(dir),
   onLeave: () => leaveToMenu(),
+});
+
+const infiniteMenu = new InfiniteMenu(uiEl, settings, {
+  onPlay: (slot) => void playWorld(slot, null),
+  onCreate: (slot, opts) => void playWorld(slot, opts),
+  onHost: (slot) => {
+    unlockAudio();
+    infiniteMenu.hide();
+    void createRoom(slot);
+  },
+  onDelete: (slot) => {
+    deleteWorld(slot);
+    infiniteMenu.show(listWorlds());
+  },
+  onBack: () => {
+    infiniteMenu.hide();
+    showMenuMap();
+    menu.show();
+  },
 });
 
 const storyHud = new StoryHud(uiEl);
@@ -208,7 +254,7 @@ const storyMenu = new StoryMenu(uiEl, CHAPTERS, settings, {
 });
 const cards = new StoryCards(uiEl);
 
-const ctx: GameContext = { renderer, input, hud, sfx, settings, story: storyHud };
+const ctx: GameContext = { renderer, input, hud, sfx, settings, story: storyHud, openHud };
 
 renderer.setShowcase(settings.variant, settings.weapon);
 updateCornerButtons();
@@ -229,9 +275,9 @@ function onSettingChanged(key: SettingKey): void {
   if (key === 'sound' || key === 'music') sfx.setEnabled(settings.sound, settings.music);
 }
 
-/** Behind the menu: the chosen map's camp ("random" keeps whatever is showing). */
+/** Behind the menu: the chosen map's camp ("random" keeps whatever is showing, unless that's an open world). */
 function showMenuMap(): void {
-  const map = previewMap(settings.map);
+  const map = previewMap(settings.map) ?? (renderer.currentMap.open ? loadMap(refOf(DEFAULT_MAP)) : null);
   if (map) renderer.setMap(map);
   renderer.setShowcase(settings.variant, settings.weapon);
 }
@@ -323,6 +369,9 @@ function releaseWakeLock(): void {
 // ------------------------------------------------------------------ sessions
 
 function clearSession(): void {
+  // Leaving an open world any way at all (quit, back to the room, another match) saves it first.
+  saveOpenWorld();
+  openWorld = null;
   session?.dispose();
   session = null;
   storyHud.reset();
@@ -330,7 +379,7 @@ function clearSession(): void {
   updateCornerButtons();
 }
 
-/** `intro`: what to flash at the start instead of the map name and tip (story chapters). */
+/** `intro`: what to flash at the start instead of the map name and tip (story chapters, open worlds). */
 function enterGame(mapRef: MapRef, create: () => Session, intro?: string): void {
   clearSession();
   renderer.clearShowcase();
@@ -341,6 +390,7 @@ function enterGame(mapRef: MapRef, create: () => Session, intro?: string): void 
   quickPlay.hide();
   lobby.hide();
   storyMenu.hide();
+  infiniteMenu.hide();
   hud.show();
   session = create();
   updateCornerButtons();
@@ -376,6 +426,109 @@ async function startSolo(): Promise<void> {
   const difficulty = settings.difficulty;
   match = { mapId: mapRef.id, difficulty, bots: settings.bots };
   enterGame(mapRef, () => new LocalGame(ctx, specs, localId, onGameEnd, null, { difficulty }));
+}
+
+// ------------------------------------------------------------------ infinite mode
+
+/** What the Infinite menu's new-world form gives. */
+interface NewWorld {
+  name: string;
+  seed: number | null;
+  difficulty: Difficulty;
+  bots: number;
+}
+
+const dayOf = (clock: number) => Math.floor(clock / OPEN.dayLength) + 1;
+
+/** Resolves once the browser has painted, so a "Loading…" card shows before a long synchronous job. */
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => window.setTimeout(resolve, 0)));
+}
+
+/** Saved worlds, in slot order. */
+function savedWorlds(): WorldSlotInfo[] {
+  return listWorlds().filter((w): w is WorldSlotInfo => w !== null);
+}
+
+/**
+ * The world in `slot`, ready to play: a new one made (and stored) from `create`, else the saved one
+ * cleaned up against its map. Builds the world map (a couple of seconds on a phone). Null if the slot is empty.
+ */
+function prepareWorld(slot: number, create: NewWorld | null): { save: WorldSave; ref: MapRef; stored: boolean } | null {
+  if (create) {
+    const seed = create.seed !== null && Number.isFinite(create.seed) ? Math.abs(Math.floor(create.seed)) % 4294967296 : randomWorldSeed();
+    const ref = openRef(seed);
+    const name = create.name.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 24) || `World ${slot + 1}`;
+    const bots = Math.max(0, Math.min(MAX_PLAYERS - 1, Math.floor(create.bots) || 0));
+    const save = newWorldSave(loadMap(ref), slot, name, create.difficulty, bots, Date.now());
+    return { save, ref, stored: storeWorld(save) };
+  }
+  const raw = loadWorld(slot);
+  if (!raw) return null;
+  const ref = openRef(raw.seed);
+  return { save: sanitizeSave(raw, loadMap(ref)), ref, stored: true };
+}
+
+/** Rules of an open-world match: the world's own rules and difficulty, no clock, no rescue hut. */
+function worldOptions(save: WorldSave): SimOptions {
+  return { open: new OpenRules(loadMap(openRef(save.seed)), save), difficulty: save.difficulty, timeLimit: null, goalRescue: false };
+}
+
+function worldWelcome(save: WorldSave, fresh: boolean): string {
+  const day = dayOf(save.clock);
+  return fresh ? `${save.name}: Day ${day}. Build a base before the first siege!` : `Welcome back to ${save.name}: Day ${day}`;
+}
+
+/** Infinite menu → a world on your own (with its bot buddies); `create` makes it first. Runs inside a tap. */
+async function playWorld(slot: number, create: NewWorld | null): Promise<void> {
+  enterFullscreenLandscape();
+  ensureTiltPermission();
+  unlockAudio();
+  const token = ++netToken;
+  infiniteMenu.hide();
+  lobby.showBusy(create ? 'Making a new world…' : 'Loading the world…');
+  await physicsReady;
+  await nextPaint();
+  if (token !== netToken) return;
+  try {
+    const w = prepareWorld(slot, create);
+    if (!w) {
+      lobby.hide();
+      infiniteMenu.show(listWorlds());
+      return;
+    }
+    mode = 'solo';
+    localId = 'p1';
+    match = null;
+    run = null;
+    const specs: PlayerSpec[] = [
+      { id: 'p1', name: nickname(), variant: settings.variant, weapon: settings.weapon, bot: false },
+      ...botSpecsFor(w.save),
+    ];
+    const options = worldOptions(w.save);
+    enterGame(w.ref, () => new LocalGame(ctx, specs, localId, onGameEnd, null, options), worldWelcome(w.save, create !== null));
+    openWorld = { slot };
+    autosaveIn = OPEN.autosave;
+    if (!w.stored) {
+      const started = session;
+      window.setTimeout(() => {
+        if (started && session === started) hud.flash('This browser won’t store the world, so it can’t be saved.', 4500);
+      }, 3200);
+    }
+  } catch (err) {
+    leaveToMenu(errorText(err));
+  }
+}
+
+/** Solo or host in an open world: store it (every OPEN.autosave seconds, on pause, when leaving or hidden). */
+function saveOpenWorld(): void {
+  autosaveIn = OPEN.autosave;
+  const w = openWorld;
+  if (!w || !(session instanceof LocalGame)) return;
+  const save = session.saveWorld(Date.now());
+  if (!save) return;
+  save.slot = w.slot;
+  if (!storeWorld(save)) hud.flash('Couldn’t save the world: the browser’s storage is full or blocked.', 4000);
 }
 
 function onGameEnd(snap: Snapshot): void {
@@ -520,11 +673,14 @@ function setPaused(on: boolean): void {
   session.paused = on;
   hud.setPaused(on, session.canPause);
   input.setEnabled(!on);
+  if (on) saveOpenWorld();
 }
 
 /** `keepRejoin`: we lost a room rather than leaving it, so the menu offers to rejoin it. */
 function leaveToMenu(message = '', keepRejoin = false): void {
   netToken++;
+  // "Save & quit" from a world of your own goes back to the list of worlds.
+  const toWorlds = openWorld !== null && mode === 'solo' && !message;
   const room = client?.code ?? rejoinableRoom();
   if (keepRejoin && room) menu.setInvite(room, true);
   else if (client || mode === 'guest') forgetRoom();
@@ -540,21 +696,39 @@ function leaveToMenu(message = '', keepRejoin = false): void {
   hud.hide();
   lobby.hide();
   quickPlay.hide();
+  infiniteMenu.hide();
   releaseWakeLock();
   showMenuMap();
-  menu.show(message);
+  if (toWorlds) infiniteMenu.show(listWorlds());
+  else menu.show(message);
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && session?.canPause) setPaused(true);
+  if (!document.hidden) return;
+  // Pausing saves an open world too; a host's world keeps running, so just save it.
+  if (session?.canPause) setPaused(true);
+  else saveOpenWorld();
 });
+// Closing the tab or the app: last chance to save the world.
+window.addEventListener('pagehide', () => saveOpenWorld());
 
 // ------------------------------------------------------------------ multiplayer
 
 function showRoom(): void {
   if (host) {
     const h = host;
-    lobby.showRoom({ code: h.code, players: h.players, bots: h.bots, mapPick: h.mapPick, difficulty: h.difficulty, isHost: true, myId: 'p1' });
+    const w = h.mode === 'open' ? h.world : null;
+    lobby.showRoom({
+      code: h.code,
+      players: h.players,
+      bots: h.bots,
+      mapPick: h.mapPick,
+      difficulty: h.difficulty,
+      isHost: true,
+      myId: 'p1',
+      mode: h.mode,
+      world: w ? { name: w.name, day: w.day } : null,
+    });
   } else if (client) {
     const c = client;
     lobby.showRoom({
@@ -566,11 +740,14 @@ function showRoom(): void {
       isHost: false,
       myId: c.myId,
       waiting: c.playing,
+      mode: c.mode,
+      world: c.world,
     });
   }
 }
 
-async function createRoom(): Promise<void> {
+/** `openSlot`: the room plays that saved world (Infinite menu → Host) instead of quick play matches. */
+async function createRoom(openSlot: number | null = null): Promise<void> {
   const token = ++netToken;
   lobby.showBusy('Creating room…');
   try {
@@ -580,6 +757,11 @@ async function createRoom(): Promise<void> {
       return;
     }
     host = h;
+    const saved = openSlot !== null ? loadWorld(openSlot) : null;
+    if (saved) {
+      h.setWorld(worldInfo(saved));
+      h.setMode('open');
+    }
     h.onChange = () => {
       if (!session) showRoom();
     };
@@ -588,6 +770,9 @@ async function createRoom(): Promise<void> {
     };
     h.onNotice = (text) => {
       if (session) hud.flash(text);
+    };
+    h.onCommand = (seat, cmd) => {
+      if (session instanceof LocalGame) session.command(seat, cmd);
     };
     showRoom();
   } catch (err) {
@@ -656,10 +841,17 @@ function useClient(c: NetClient): void {
     }
     showRoom();
   };
-  c.onStart = (specs, mapRef, difficulty, you) => {
+  c.onStart = (specs, mapRef, difficulty, you, open) => {
     mode = 'guest';
     localId = you ?? c.myId;
     markInRoom(c.code);
+    if (open) {
+      // The host's world: built here from its seed (same seed, same world), changes come with the join.
+      match = null;
+      const welcome = c.world ? `Welcome to ${c.world.name}: Day ${dayOf(open.clock)}` : `Into the world: Day ${dayOf(open.clock)}`;
+      enterGame(openRef(open.seed), () => new RemoteGame(ctx, specs, localId, onGameEnd, c, open), welcome);
+      return;
+    }
     // Same protocol version means the same maps, so this fallback should never be needed.
     const ref = isMapRef(mapRef) ? mapRef : refOf(DEFAULT_MAP);
     match = { mapId: ref.id, difficulty, bots: specs.filter((s) => s.bot).length };
@@ -686,6 +878,7 @@ async function hostStart(): Promise<void> {
   unlockAudio();
   await physicsReady;
   if (host !== h) return;
+  if (h.mode === 'open') return hostWorld(h);
   const specs: PlayerSpec[] = [...h.players.map((p) => ({ ...p, bot: false })), ...botSpecs(h.bots)];
   mode = 'host';
   localId = 'p1';
@@ -698,6 +891,74 @@ async function hostStart(): Promise<void> {
     h.game = game; // for guests leaving, coming back or dropping in mid-match
     return game;
   });
+}
+
+/**
+ * The room plays its saved world: everyone in the room gets a panda, the world's bot buddies fill the
+ * places left (MAX_PLAYERS in all). Guests can drop in and out while it runs; only this device saves it.
+ */
+async function hostWorld(h: NetHost): Promise<void> {
+  const slot = h.world?.slot ?? -1;
+  lobby.showBusy('Loading the world…');
+  await nextPaint();
+  if (host !== h) return;
+  try {
+    const w = slot >= 0 ? prepareWorld(slot, null) : null;
+    if (!w) {
+      // The save is gone: back to quick play matches.
+      h.setWorld(null);
+      h.setMode('quick');
+      showRoom();
+      return;
+    }
+    const humans: PlayerSpec[] = h.players.map((p) => ({ ...p, bot: false }));
+    const specs: PlayerSpec[] = [...humans, ...botSpecsFor(w.save).slice(0, Math.max(0, MAX_PLAYERS - humans.length))];
+    mode = 'host';
+    localId = 'p1';
+    match = null;
+    run = null;
+    const options = worldOptions(w.save);
+    enterGame(
+      w.ref,
+      () => {
+        const game = new LocalGame(ctx, specs, localId, onGameEnd, h, options);
+        h.start(specs, w.ref, game.joinWorld() ?? undefined);
+        h.game = game; // for guests dropping in and out of the world
+        return game;
+      },
+      worldWelcome(w.save, false),
+    );
+    openWorld = { slot };
+    autosaveIn = OPEN.autosave;
+  } catch (err) {
+    leaveToMenu(errorText(err));
+  }
+}
+
+/** Host switches the room between quick play and infinite mode (which needs a saved world). */
+function setRoomMode(m: RoomMode): void {
+  const h = host;
+  if (!h || session) return;
+  if (m === 'open') {
+    const worlds = savedWorlds();
+    const pick = worlds.find((w) => w.slot === h.world?.slot) ?? worlds[0];
+    if (!pick) {
+      // Nothing saved yet (worlds are made in the Infinite menu): stay on quick play.
+      h.setMode('quick');
+      return;
+    }
+    h.setWorld(pick);
+  }
+  h.setMode(m);
+}
+
+/** Host cycles through the saved worlds. */
+function cycleRoomWorld(dir: number): void {
+  const h = host;
+  const worlds = savedWorlds();
+  if (!h || session || worlds.length === 0) return;
+  const i = Math.max(0, worlds.findIndex((w) => w.slot === h.world?.slot));
+  h.setWorld(worlds[(i + dir + worlds.length) % worlds.length]);
 }
 
 function hostBackToLobby(): void {
@@ -727,8 +988,16 @@ function frame(now: number): void {
     fpsFrames = 0;
   }
 
-  if (session) session.frame(dt, settings.showFps ? fps : null);
-  else renderer.updateShowcase(dt);
+  if (session) {
+    session.frame(dt, settings.showFps ? fps : null);
+    // Autosave counts play time: a paused solo world doesn't change.
+    if (openWorld && !(session.paused && session.canPause)) {
+      autosaveIn -= dt;
+      if (autosaveIn <= 0) saveOpenWorld();
+    }
+  } else {
+    renderer.updateShowcase(dt);
+  }
   renderer.render();
   requestAnimationFrame(frame);
 }

@@ -1,3 +1,5 @@
+import type { LootBag, OpenSnap, Piece, PieceKind, RecipeId, ResourceKind } from './open/types';
+
 export type PandaVariant = 'giant' | 'red' | 'brown' | 'ink';
 export const PANDA_VARIANTS: readonly PandaVariant[] = ['giant', 'red', 'brown', 'ink'];
 
@@ -144,7 +146,41 @@ export type GameEvent =
   | { e: 'collect'; id: string; x: number; y: number; z: number }
   | { e: 'objective' }
   | { e: 'checkpoint' }
-  | { e: 'heal'; id: string };
+  | { e: 'heal'; id: string }
+  // Infinite mode. The first six change the world itself: every client's WorldMirror applies them.
+  /** A piece was placed, or changed (tier, hp band, ruined, repaired). */
+  | { e: 'piece'; p: Piece }
+  /** A piece was demolished. */
+  | { e: 'unpiece'; id: number }
+  /** A resource node now holds `left` units (0: depleted; full again when regrown). */
+  | { e: 'node'; id: number; left: number }
+  /** A crate was emptied by panda `by`. */
+  | { e: 'crate'; id: number; by: string }
+  /** A dead panda's pack was dropped… */
+  | { e: 'bag'; b: LootBag }
+  /** …and picked up by `by`. */
+  | { e: 'unbag'; id: number; by: string }
+  /** Panda `id` gathered `n` of resource `r` at (x, z). */
+  | { e: 'gather'; id: string; r: ResourceKind; n: number; x: number; z: number }
+  | { e: 'built'; id: string; kind: PieceKind; how: 'place' | 'upgrade' | 'repair' | 'demolish'; x: number; z: number }
+  /** A piece broke down to rubble. */
+  | { e: 'smash'; x: number; z: number }
+  /** A zombie bit a piece. */
+  | { e: 'chomp'; x: number; z: number }
+  | { e: 'crafted'; id: string; recipe: RecipeId }
+  /** A command from panda `id` was refused (shown to that player only). */
+  | { e: 'deny'; id: string; why: string }
+  | { e: 'deposit'; id: string }
+  | { e: 'respawn'; id: string }
+  /** A siege is coming: it arrives at (x, z) in `eta` seconds (`base`: it goes for the base). */
+  | { e: 'siege'; x: number; z: number; eta: number; base: boolean }
+  /** The siege is over: beaten off (`won`) or it gave up. */
+  | { e: 'siegeOver'; won: boolean }
+  | { e: 'dawn'; day: number }
+  | { e: 'dusk' }
+  | { e: 'hungry'; id: string }
+  /** Panda `id` claimed bed `bed` (they respawn there). */
+  | { e: 'bed'; id: string; bed: number };
 
 export type StoryItemKind = 'battery' | 'lotus' | 'glowcap' | 'sack' | 'keycard';
 
@@ -209,4 +245,6 @@ export interface Snapshot {
   events: GameEvent[];
   /** Story mode only. */
   story?: StorySnap;
+  /** Infinite mode only. */
+  open?: OpenSnap;
 }

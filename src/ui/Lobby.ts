@@ -2,6 +2,7 @@ import { MAX_PLAYERS, type Difficulty } from '../config';
 import { inviteLink } from '../net/invite';
 import { CODE_LENGTH, normalizeCode, type LobbyPlayer } from '../net/protocol';
 import { PANDA_LOOKS } from '../render/pandaModel';
+import type { RoomMode } from '../sim/open/types';
 import { WEAPONS } from '../sim/weapons';
 import { difficultyButtons, el, markActive, scrollHint } from './dom';
 import { MapPicker } from './MapPicker';
@@ -28,6 +29,10 @@ export interface LobbyHandlers {
   /** Host cycles the map choice. */
   onMap(dir: number): void;
   onDifficulty(difficulty: Difficulty): void;
+  /** Host switches between a quick match and an Infinite world. */
+  onMode(mode: RoomMode): void;
+  /** Host cycles the saved world to play (Infinite rooms). */
+  onWorld(dir: number): void;
   /** Leave the room (or the multiplayer screen) and return to the main menu. */
   onLeave(): void;
 }
@@ -43,6 +48,10 @@ export interface RoomView {
   myId: string;
   /** A match is on without us (we joined late, no bot panda was free): we play the next one. */
   waiting?: boolean;
+  /** A quick match, or an Infinite world (whose save decides the map, bots and difficulty). */
+  mode: RoomMode;
+  /** Infinite rooms: the world to be played (null: the host has no saved world yet). */
+  world: { name: string; day: number } | null;
 }
 
 /** Multiplayer screens: create / join, then the room with its code and player list. */
@@ -101,12 +110,24 @@ export class Lobby {
             <ul class="player-list" data-ref="players"></ul>
           </div>
           <div class="room-col">
+            <div class="picker" data-ref="mode-row">
+              <span>Mode</span>
+              <div class="seg" data-ref="mode">
+                <button data-act="mode" data-v="quick">Quick match</button>
+                <button data-act="mode" data-v="open">Infinite</button>
+              </div>
+            </div>
             <div data-ref="map"></div>
+            <div class="map-row world-row" data-ref="world-row" hidden>
+              <button class="arrow-btn" data-act="world" data-v="-1" aria-label="Previous world">‹</button>
+              <b data-ref="world"></b>
+              <button class="arrow-btn" data-act="world" data-v="1" aria-label="Next world">›</button>
+            </div>
             <div class="picker" data-ref="bots-row">
               <span>Bot buddies</span>
               <div class="seg" data-ref="bots"></div>
             </div>
-            <div class="picker">
+            <div class="picker" data-ref="difficulty-row">
               <span>Difficulty</span>
               <div class="seg" data-ref="difficulty">${difficultyButtons()}</div>
             </div>
@@ -168,6 +189,12 @@ export class Lobby {
         case 'difficulty':
           h.onDifficulty(t.dataset.v as Difficulty);
           break;
+        case 'mode':
+          h.onMode(t.dataset.v === 'open' ? 'open' : 'quick');
+          break;
+        case 'world':
+          h.onWorld(Number(t.dataset.v) || 0);
+          break;
         case 'copy':
           void this.copyCode();
           break;
@@ -223,7 +250,8 @@ export class Lobby {
     this.code = v.code;
     this.ref('room-code').textContent = v.code;
     this.ref('qr-count').textContent = `${v.players.length}/${MAX_PLAYERS} pandas in the room.`;
-    this.mapPicker.set(v.mapPick, v.isHost);
+    // Never a preview of the open world (it's far too big to build for a thumbnail).
+    if (v.mode !== 'open') this.mapPicker.set(v.mapPick, v.isHost);
 
     const list = this.ref('players');
     list.innerHTML = '';
@@ -252,16 +280,46 @@ export class Lobby {
       b.disabled = !v.isHost;
       bots.appendChild(b);
     }
-    this.ref('bots-row').hidden = maxBots === 0 && v.bots === 0;
     const diff = this.ref('difficulty');
     markActive(diff, v.difficulty);
     for (const b of diff.querySelectorAll<HTMLButtonElement>('button')) b.disabled = !v.isHost;
-    this.ref('start').hidden = !v.isHost;
-    this.ref('room-hint').textContent = v.isHost
-      ? `Share the code or link (up to ${MAX_PLAYERS} pandas), then press Start. Latecomers can take over a bot mid-match.`
-      : v.waiting
-        ? 'A match is on: you play the next one!'
-        : 'Waiting for the host to start the game…';
+
+    // Infinite: the saved world decides the map, the bots and the difficulty; only the world line shows.
+    const open = v.mode === 'open';
+    const mode = this.ref('mode');
+    markActive(mode, v.mode);
+    for (const b of mode.querySelectorAll<HTMLButtonElement>('button')) b.disabled = !v.isHost;
+    // Guests just see what's on (the room hint says it).
+    this.ref('mode-row').hidden = !v.isHost;
+    this.mapPicker.el.hidden = open;
+    this.ref('bots-row').hidden = open || (maxBots === 0 && v.bots === 0);
+    this.ref('difficulty-row').hidden = open;
+    this.ref('world-row').hidden = !open;
+    if (open) {
+      this.ref('world').textContent = v.world ? `${v.world.name} · Day ${v.world.day}` : 'No saved world';
+      for (const b of this.ref('world-row').querySelectorAll<HTMLButtonElement>('[data-act="world"]')) b.hidden = !v.isHost;
+    }
+    const start = this.ref<HTMLButtonElement>('start');
+    start.hidden = !v.isHost;
+    start.disabled = open && !v.world;
+    start.textContent = open ? 'Open the world!' : 'Start!';
+    let hint: string;
+    if (open) {
+      hint = v.isHost
+        ? v.world
+          ? `Share the code or link (up to ${MAX_PLAYERS} pandas). Friends can drop into the world any time.`
+          : 'Make a world in the Infinite menu first (main menu → Infinite).'
+        : v.world
+          ? `Infinite world: ${v.world.name}, day ${v.world.day}. Waiting for the host to open it…`
+          : 'Infinite world: waiting for the host to pick one…';
+    } else {
+      hint = v.isHost
+        ? `Share the code or link (up to ${MAX_PLAYERS} pandas), then press Start. Latecomers can take over a bot mid-match.`
+        : v.waiting
+          ? 'A match is on: you play the next one!'
+          : 'Waiting for the host to start the game…';
+    }
+    this.ref('room-hint').textContent = hint;
   }
 
   hide(): void {

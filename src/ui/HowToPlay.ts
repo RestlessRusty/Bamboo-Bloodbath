@@ -45,6 +45,30 @@ const KEYS: Rows = [
   ['Pause', '<kbd>Esc</kbd>'],
 ];
 
+/** Infinite mode only, under the keyboard controls. */
+const OPEN_KEYS: Rows = [
+  ['Build mode', '<kbd>B</kbd>, or pick a piece with <kbd>1</kbd>–<kbd>8</kbd>'],
+  ['Rotate piece', '<kbd>R</kbd> (in build mode)'],
+  ['Place / fix', '<kbd>Space</kbd> or <kbd>Enter</kbd>: places, or repairs / upgrades the piece there'],
+  ['Demolish', '<kbd>X</kbd> (in build mode)'],
+  ['Craft', '<kbd>F</kbd> next to a workbench or campfire'],
+];
+
+const OPEN_TOUCH: Rows = [
+  ['Build', 'Hammer button by the map: pick a piece, then Place (big button) and Rotate'],
+  ['Craft', 'Anvil button, next to a workbench or campfire'],
+];
+
+const OPEN_RULES: Rows = [
+  ['The world', 'One big world that never ends, saved on your phone. Survive as many days as you can, alone, with bots or friends.'],
+  ['Gather', 'Hit trees for wood, rocks for stone, bamboo groves and scrap piles. An axe chops and mines faster, a knife cuts bamboo and scrap.'],
+  ['Build', 'Pieces go on the tile in front of you. Walls and gates upgrade from bamboo to wood to stone; zombies chew through them.'],
+  ['Stash', 'Walk up to a storage chest to empty your pack. Building and crafting use the stash near a chest too.'],
+  ['Food', 'Hunger drains slowly: eat bamboo snacks or cook stew at a campfire. Starving hurts.'],
+  ['Beds', 'Walk up to a bed to make it yours: if nobody revives you, you wake up there. Your pack stays where you fell.'],
+  ['Sieges', 'Every day or two a big horde comes for your base. A lookout tower spots it sooner. Nights are busier, campfires help.'],
+];
+
 const PAD: Rows = [
   ['Move', 'Left stick (push gently to sneak)'],
   ['Attack', '<kbd>A</kbd> / <kbd>X</kbd> / <kbd>RT</kbd>'],
@@ -83,7 +107,7 @@ export class HowToPlay {
       `<div class="card howto">
         <h2>How to play</h2>
         <div class="scroll-body" data-ref="body">
-          <p class="howto-goal">Reach the <b>rescue hut</b> before time runs out: the arrow shows the way. Story chapters set their own goals.</p>
+          <p class="howto-goal">Reach the <b>rescue hut</b> before time runs out: the arrow shows the way. Story chapters set their own goals; Infinite is about surviving.</p>
           <div class="howto-cols">
             <section>
               <div class="seg" data-ref="devices">
@@ -96,6 +120,16 @@ export class HowToPlay {
             </section>
             <section>
               <dl class="howto-list">${rowsHtml(RULES)}</dl>
+            </section>
+          </div>
+          <h3 class="howto-sub">Infinite mode</h3>
+          <div class="howto-cols">
+            <section>
+              <dl class="howto-list">${rowsHtml(OPEN_RULES.slice(0, 4))}</dl>
+            </section>
+            <section>
+              <dl class="howto-list">${rowsHtml(OPEN_RULES.slice(4))}</dl>
+              <dl class="howto-list" data-ref="open-controls"></dl>
             </section>
           </div>
         </div>
@@ -143,6 +177,10 @@ export class HowToPlay {
       rows = this.device === 'keys' ? KEYS : PAD;
     }
     this.ref('controls').innerHTML = rowsHtml(rows);
+    // The gamepad has no build controls yet: building needs the touch buttons or the keyboard.
+    const open = this.device === 'touch' ? OPEN_TOUCH : this.device === 'keys' ? OPEN_KEYS : [];
+    this.ref('open-controls').innerHTML = rowsHtml(open);
+    this.ref('open-controls').hidden = open.length === 0;
     this.ref('note').textContent = note;
     this.ref('note').hidden = !note;
   }

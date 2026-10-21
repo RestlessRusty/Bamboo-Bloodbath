@@ -9,6 +9,8 @@ const ICON_GEAR = `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5.6"/><ci
 export interface MenuHandlers {
   onStory(): void;
   onQuickPlay(): void;
+  /** Infinite mode: the saved worlds. */
+  onInfinite(): void;
   onMultiplayer(): void;
   /** "Join XXXX" from an invite link. */
   onInvite(code: string): void;
@@ -20,7 +22,7 @@ export interface MenuHandlers {
   onChange(): void;
 }
 
-/** Main menu: who you are (name, panda, weapon) and the three ways to play. */
+/** Main menu: who you are (name, panda, weapon) and the ways to play. */
 export class Menu {
   private readonly el: HTMLDivElement;
   private invite: string | null = null;
@@ -63,9 +65,10 @@ export class Menu {
         <div class="modes">
           <div class="mode-group">
             <span class="mode-head">Solo</span>
-            <div class="mode-row">
+            <div class="mode-row mode-row-fit">
               <button class="btn primary big" data-act="story">Story</button>
               <button class="btn primary big" data-act="quick">Quick play</button>
+              <button class="btn primary big infinite-btn" data-act="infinite">Infinite</button>
             </div>
           </div>
           <div class="mode-group">
@@ -100,6 +103,9 @@ export class Menu {
           break;
         case 'quick':
           h.onQuickPlay();
+          break;
+        case 'infinite':
+          h.onInfinite();
           break;
         case 'multi':
           h.onMultiplayer();

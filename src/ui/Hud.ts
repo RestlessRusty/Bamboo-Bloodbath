@@ -1,5 +1,7 @@
 import { DOWNED, JAVELIN, NOISE, SURVIVOR } from '../config';
 import type { GameMap } from '../sim/gameMap';
+import { OPEN } from '../sim/open/config';
+import type { WorldMirror } from '../sim/open/mirror';
 import type { Route } from '../sim/route';
 import type { PlayerSpec, Snapshot, SurvivorSnap } from '../sim/types';
 import { el, formatTime } from './dom';
@@ -70,6 +72,14 @@ export class Hud {
   private msgTimer = 0;
   private time = 0;
   private route: Route | null = null;
+  /** Infinite mode: the world's camp (null on normal maps), its mirror, and whether we're a guest in it. */
+  private openSpawn: { x: number; z: number } | null = null;
+  private mirror: WorldMirror | null = null;
+  private guest = false;
+  /** The base the arrow points to, worked out again only when the world changes. */
+  private base: { x: number; z: number } | null = null;
+  private baseRev = -1;
+  private readonly pauseQuit: HTMLElement;
 
   constructor(parent: HTMLElement, h: HudHandlers) {
     this.el = el(
@@ -114,7 +124,7 @@ export class Hud {
           <p class="hint" data-ref="pause-note">The game keeps running in multiplayer!</p>
           <button class="btn primary" data-act="resume">Resume</button>
           <button class="btn" data-act="settings">Settings</button>
-          <button class="btn ghost" data-act="quit">Quit to menu</button>
+          <button class="btn ghost" data-act="quit" data-ref="pause-quit">Quit to menu</button>
         </div>
       </div>
       <div class="overlay" data-ref="end" hidden>
@@ -157,6 +167,7 @@ export class Hud {
     this.msg = this.ref('msg');
     this.pausePanel = this.ref('pause');
     this.pauseNote = this.ref('pause-note');
+    this.pauseQuit = this.ref('pause-quit');
     this.endPanel = this.ref('end');
     this.mapBig = this.ref('map-big');
     this.minimap = new HudMap(this.ref<HTMLCanvasElement>('map'), this.ref<HTMLCanvasElement>('map-big-canvas'));
@@ -180,10 +191,29 @@ export class Hud {
     });
   }
 
-  /** This match's map: the arrow points along the way to the rescue hut, and the minimap shows it. */
+  /**
+   * This match's map: the arrow points along the way to the rescue hut, and the minimap shows it.
+   * An open world has no hut and no clock: the arrow points to a siege, the base or the camp.
+   */
   setMap(map: GameMap): void {
     this.route = map.route;
+    this.openSpawn = map.open ? map.open.spawn : null;
+    this.el.classList.toggle('open', !!map.open);
+    this.goalBox.classList.remove('siege');
+    if (!map.open) this.setOpenMirror(null);
     this.minimap.setMap(map);
+  }
+
+  /**
+   * Infinite mode: the world as this device knows it (bases for the arrow, pieces on the map); null when
+   * leaving. `guest`: playing in someone else's world (the pause card says "Leave world", not "Save & quit").
+   */
+  setOpenMirror(m: WorldMirror | null, guest = false): void {
+    this.mirror = m;
+    this.guest = guest;
+    this.base = null;
+    this.baseRev = -1;
+    this.minimap.setOpenMirror(m);
   }
 
   setTeam(specs: readonly PlayerSpec[], localId: string): void {
@@ -218,7 +248,20 @@ export class Hud {
 
   setPaused(on: boolean, canPause: boolean): void {
     this.pausePanel.hidden = !on;
-    this.pauseNote.hidden = canPause;
+    if (!this.openSpawn) {
+      this.pauseNote.textContent = 'The game keeps running in multiplayer!';
+      this.pauseNote.hidden = canPause;
+      this.pauseQuit.textContent = 'Quit to menu';
+      return;
+    }
+    // Open world: it's never over, so leaving is the way out; only the host (or solo) saves it.
+    this.pauseNote.hidden = false;
+    this.pauseNote.textContent = this.guest
+      ? 'The world keeps running. The host saves it, your panda included.'
+      : canPause
+        ? 'The world is saved when you leave.'
+        : 'The world keeps running for your friends. It is saved when you leave.';
+    this.pauseQuit.textContent = this.guest ? 'Leave world' : 'Save & quit';
   }
 
   flash(text: string, ms = 3000): void {
@@ -259,8 +302,8 @@ export class Hud {
 
   update(snap: Snapshot, fps: number | null): void {
     this.time += 1 / 60;
-    // No clock (story chapters without a time limit): no timer.
-    this.timer.hidden = snap.timeLeft < 0;
+    // No clock (story chapters without a time limit, open worlds: OpenHud shows the day instead): no timer.
+    this.timer.hidden = snap.timeLeft < 0 || !!this.openSpawn;
     const t = formatTime(snap.timeLeft);
     if (this.timer.textContent !== t) this.timer.textContent = t;
     this.timer.classList.toggle('urgent', snap.timeLeft >= 0 && snap.timeLeft < 30);
@@ -272,7 +315,9 @@ export class Hud {
 
     const active = me?.state === 'active';
     const story = snap.story;
-    if (story) {
+    if (this.openSpawn) {
+      this.updateOpenArrow(snap, me, active);
+    } else if (story) {
       // Story: the arrow points at the current objective (via a pass or bridge on the way).
       const a = story.arrow;
       this.goalBox.hidden = !me || !a;
@@ -285,7 +330,7 @@ export class Hud {
     } else {
       this.goalBox.hidden = !me || !this.route;
     }
-    if (me && this.route && !story) {
+    if (me && this.route && !story && !this.openSpawn) {
       // Point at the next waypoint (a pass, say) and show the distance left along the way.
       const { next, remaining } = this.route.locate(me.x, me.z);
       const dx = next.x - me.x;
@@ -301,6 +346,41 @@ export class Hud {
 
     this.fps.hidden = fps === null;
     if (fps !== null) this.setText(this.fps, `${fps} fps`);
+  }
+
+  /**
+   * Open world: during a siege the arrow points at what it's going for (the base), or at the horde when
+   * it's hunting the pandas themselves; otherwise home to the base, or the camp before there is one.
+   */
+  private updateOpenArrow(snap: Snapshot, me: SurvivorSnap | undefined, active: boolean): void {
+    this.goalBox.hidden = !me;
+    if (!me) return;
+    const siege = snap.open?.siege ?? null;
+    let x: number;
+    let z: number;
+    let icon: string;
+    if (siege) {
+      x = siege.base ? siege.tx : siege.x;
+      z = siege.base ? siege.tz : siege.z;
+      icon = '⚔';
+    } else {
+      const m = this.mirror;
+      if (m && m.rev !== this.baseRev) {
+        this.baseRev = m.rev;
+        this.base = m.baseCenter();
+      }
+      const home = this.base ?? this.openSpawn!;
+      x = home.x;
+      z = home.z;
+      icon = this.base ? '🏠' : '⛺';
+    }
+    const dx = x - me.x;
+    const dz = z - me.z;
+    this.arrow.style.transform = `rotate(${Math.atan2(dx, -dz)}rad)`;
+    this.arrow.style.visibility = active ? 'visible' : 'hidden';
+    this.setText(this.dist, active ? `${Math.round(Math.hypot(dx, dz))} m` : '');
+    this.setText(this.saved, icon);
+    this.goalBox.classList.toggle('siege', !!siege);
   }
 
   private updateMe(me: SurvivorSnap | undefined, snap: Snapshot): void {
@@ -319,7 +399,8 @@ export class Hud {
     this.setText(this.crackers, me.state === 'active' ? `Firecrackers ×${me.crackers}` : '');
 
     let status = '';
-    if (me.state === 'downed') status = `You're down! ${Math.ceil(me.bleed)}s… a buddy can revive you`;
+    // Open world: OpenHud says where and when you respawn instead (nobody turns there).
+    if (me.state === 'downed') status = this.openSpawn ? '' : `You're down! ${Math.ceil(me.bleed)}s… a buddy can revive you`;
     else if (me.state === 'dead') status = 'You turned into a zombie… spectating';
     else if (me.state === 'rescued') status = 'You made it! Spectating…';
     else if (me.hidden) status = 'Hidden in the bamboo';
@@ -336,7 +417,7 @@ export class Hud {
 
   /** Off to the side (under the goal box), so you can keep watching the bots instead. */
   private updateEndButton(snap: Snapshot): void {
-    const n = snap.phase === 'playing' && !snap.story ? snap.botsOut : 0;
+    const n = snap.phase === 'playing' && !snap.story && !this.openSpawn ? snap.botsOut : 0;
     this.endBtn.hidden = n === 0;
     if (n === 0) return;
     this.setText(this.botsOut, `${n} bot${n === 1 ? '' : 's'} still out`);
@@ -347,10 +428,11 @@ export class Hud {
   }
 
   private updateTeam(snap: Snapshot): void {
+    const bleedTime = this.openSpawn ? OPEN.bleedTime : DOWNED.bleedTime;
     for (const s of snap.survivors) {
       const r = this.rows.get(s.id);
       if (!r) continue;
-      r.fill.style.width = `${(s.state === 'downed' ? s.bleed / DOWNED.bleedTime : s.hp / SURVIVOR.maxHp) * 100}%`;
+      r.fill.style.width = `${(s.state === 'downed' ? s.bleed / bleedTime : s.hp / SURVIVOR.maxHp) * 100}%`;
       r.row.dataset.state = s.state;
       this.setText(r.icon, STATUS_ICON[s.state] ?? '');
     }

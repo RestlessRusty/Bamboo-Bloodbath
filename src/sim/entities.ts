@@ -88,6 +88,14 @@ export interface Zombie {
   wanderX: number;
   wanderZ: number;
   groanCd: number;
+  /** Infinite mode: the roaming horde it belongs to (-1: none). */
+  horde: number;
+  /** Infinite mode: part of a siege (hunts a bit further, goes for the base). */
+  siege: boolean;
+  /** Infinite mode: where it walks while it has nobody to chase (set by the horde director). */
+  goal: { x: number; z: number } | null;
+  /** Infinite mode: id of the piece it's biting right now (-1: none). */
+  piece: number;
 }
 
 export interface Javelin {
