@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GOAL_RADIUS } from '../config';
-import { smoothstep, valueNoise } from '../core/math';
+import { lerp, smoothstep, valueNoise } from '../core/math';
+import { Rng } from '../core/rng';
 import type { GameMap } from '../sim/gameMap';
 import type { DecorProp, RockProp, StalkProp, TreeProp } from '../sim/props';
 import type { RiverShape } from '../sim/river';
-import { addOutline, toon, toonInstanced } from './toon';
+import { buildRoads, buildStoryBuilding } from './storyBuildings';
+import { addOutline, outlineMaterial, toon, toonInstanced } from './toon';
 
 export interface WorldView {
   group: THREE.Group;
@@ -19,7 +21,7 @@ export function buildWorld(map: GameMap): WorldView {
   const goal = map.layout.goalStyle === 'none' ? null : buildGoal(map);
   const camp = buildCamp(map);
   const landmarks = buildLandmarks(map);
-  group.add(terrain, buildWater(map), buildCrossings(map), ...buildTrees(map), buildRocks(map), ...buildBamboo(map), ...buildDecor(map));
+  group.add(terrain, buildWater(map), buildCrossings(map), ...buildTrees(map), ...buildRocks(map), ...buildBamboo(map), ...buildDecor(map));
   group.add(camp.group, landmarks.group);
   if (goal) group.add(goal.group);
   return {
@@ -98,18 +100,31 @@ export class GroundPalette {
   }
 }
 
-export function terrainColor(map: GameMap, pal: GroundPalette, x: number, y: number, z: number, out: THREE.Color): void {
+const strata = new THREE.Color();
+
+/** `steep`: 0 on flat ground, 1 on a vertical face (1 - the normal's y); leave out where the slope isn't known. */
+export function terrainColor(map: GameMap, pal: GroundPalette, x: number, y: number, z: number, out: THREE.Color, steep = 0): void {
   const { layout, terrain } = map;
   out.copy(pal.a).lerp(pal.b, valueNoise(x / 9, z / 9, layout.seed + 3));
   out.lerp(pal.high, smoothstep(2.5, pal.peak, y));
+  // Bare rock on anything steep and up the ridge sides, a cap of hilltop colour (snow) along the crests.
+  let rock = y > terrain.waterLevel ? smoothstep(0.25, 0.5, steep) : 0;
+  let crest = 0;
   if (terrain.ridges.length) {
-    // Bare rock up the ridge sides, a cap of hilltop colour (snow) along the crest.
     const ra = terrain.ridgeAmount(x, z);
     if (ra > 0) {
-      out.lerp(pal.cliff, smoothstep(0.08, 0.4, ra));
-      out.lerp(pal.high, smoothstep(0.82, 0.97, ra) * 0.9);
+      rock = Math.max(rock, smoothstep(0.08, 0.4, ra));
+      crest = smoothstep(0.82, 0.97, ra) * 0.9;
     }
   }
+  if (rock > 0) {
+    // Layered stone: bands that wobble with height, plus grit, so a cliff doesn't read as one smeared colour.
+    const band = Math.sin(y * 2.3 + valueNoise(x / 7, z / 7, layout.seed + 41) * 5);
+    const grit = valueNoise(x * 0.9, z * 0.9, layout.seed + 43) - 0.5;
+    strata.copy(pal.cliff).multiplyScalar(1 + band * 0.1 + grit * 0.25);
+    out.lerp(strata, rock);
+  }
+  if (crest > 0) out.lerp(pal.high, crest);
   for (const t of layout.thickets) {
     const d = Math.hypot(x - t.x, z - t.z);
     if (d < t.r + 2) out.lerp(pal.thicket, 1 - smoothstep(t.r - 1, t.r + 2, d));
@@ -132,22 +147,111 @@ export function terrainColor(map: GameMap, pal: GroundPalette, x: number, y: num
   out.lerp(pal.rim, smoothstep(layout.size / 2 - 2, layout.size / 2 + 12, edge));
 }
 
+/** Grid cells whose corners differ by more than this are cliff: split finer and drawn as faceted rock. */
+const STEEP_RISE = 1.1;
+/** Each cliff cell becomes CLIFF_SUB × CLIFF_SUB smaller ones. */
+const CLIFF_SUB = 3;
+/** How far cliff vertices get pushed about, for a craggy face. */
+const CLIFF_ROUGH = 0.3;
+
+/**
+ * The physics grid, except that steep cells (ridge flanks, pass walls) get more vertices sampled from
+ * the height field and a little roughness. A whole wall over three ~1.6 m cells otherwise turns into
+ * long smeared triangles. Vertices on the border with a smooth cell stay on its straight edge (no cracks).
+ */
 function buildTerrain(map: GameMap): THREE.Mesh {
-  const { positions, indices } = map.grid;
-  const pal = new GroundPalette(map);
+  const { positions: grid, seg, size } = map.grid;
+  const { terrain, layout } = map;
+  const n = seg + 1;
+  const step = size / seg;
+  const half = size / 2;
+  const S = CLIFF_SUB;
+  const fine = seg * S + 1;
+  const gy = (i: number, j: number) => grid[(j * n + i) * 3 + 1];
+
+  const steep = new Uint8Array(seg * seg);
+  for (let j = 0; j < seg; j++) {
+    for (let i = 0; i < seg; i++) {
+      const a = gy(i, j);
+      const b = gy(i + 1, j);
+      const c = gy(i, j + 1);
+      const d = gy(i + 1, j + 1);
+      steep[j * seg + i] = Math.max(a, b, c, d) - Math.min(a, b, c, d) > STEEP_RISE ? 1 : 0;
+    }
+  }
+  const isSteep = (i: number, j: number) => i >= 0 && j >= 0 && i < seg && j < seg && steep[j * seg + i] === 1;
+  // Cells touching a line of the fine lattice: one inside a cell, two on a cell border.
+  const cellsOf = (f: number) => (f % S === 0 ? [f / S - 1, f / S] : [Math.floor(f / S)]);
+
+  const pos: number[] = [];
+  const lookup = new Map<number, number>();
+  const vertex = (fi: number, fj: number): number => {
+    const key = fj * fine + fi;
+    const known = lookup.get(key);
+    if (known !== undefined) return known;
+    let x = -half + (fi / S) * step;
+    let z = -half + (fj / S) * step;
+    let allSteep = true;
+    for (const i of cellsOf(fi)) for (const j of cellsOf(fj)) if (!isSteep(i, j)) allSteep = false;
+    let y: number;
+    if (fi % S === 0 && fj % S === 0) y = gy(fi / S, fj / S);
+    else if (allSteep) y = terrain.heightAt(x, z);
+    else if (fi % S === 0) y = lerp(gy(fi / S, Math.floor(fj / S)), gy(fi / S, Math.floor(fj / S) + 1), (fj % S) / S);
+    else y = lerp(gy(Math.floor(fi / S), fj / S), gy(Math.floor(fi / S) + 1, fj / S), (fi % S) / S);
+    // Not near the water line, where the shore has to match where the water really is.
+    if (allSteep && y > terrain.waterLevel + 0.4) {
+      x += (valueNoise(fi * 0.7, fj * 0.7, layout.seed + 51) - 0.5) * 2 * CLIFF_ROUGH;
+      z += (valueNoise(fi * 0.7, fj * 0.7, layout.seed + 53) - 0.5) * 2 * CLIFF_ROUGH;
+      y += (valueNoise(fi * 0.7, fj * 0.7, layout.seed + 57) - 0.5) * 2 * CLIFF_ROUGH;
+    }
+    const k = pos.length / 3;
+    pos.push(x, y, z);
+    lookup.set(key, k);
+    return k;
+  };
+
+  // Counter-clockwise seen from above, like the physics grid.
+  const smoothTris: number[] = [];
+  const cliffTris: number[] = [];
+  const quad = (out: number[], fi: number, fj: number, s: number) => {
+    const a = vertex(fi, fj);
+    const b = vertex(fi, fj + s);
+    const c = vertex(fi + s, fj);
+    const d = vertex(fi + s, fj + s);
+    out.push(a, b, c, c, b, d);
+  };
+  for (let j = 0; j < seg; j++) {
+    for (let i = 0; i < seg; i++) {
+      if (!isSteep(i, j)) {
+        quad(smoothTris, i * S, j * S, S);
+        continue;
+      }
+      for (let sj = 0; sj < S; sj++) for (let si = 0; si < S; si++) quad(cliffTris, i * S + si, j * S + sj, 1);
+    }
+  }
+
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3));
-  geo.setIndex(new THREE.BufferAttribute(indices, 1));
-  const colors = new Float32Array(positions.length);
-  for (let i = 0; i < positions.length; i += 3) {
-    terrainColor(map, pal, positions[i], positions[i + 1], positions[i + 2], tmpColor);
-    colors[i] = tmpColor.r;
-    colors[i + 1] = tmpColor.g;
-    colors[i + 2] = tmpColor.b;
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(smoothTris.concat(cliffTris));
+  geo.addGroup(0, smoothTris.length, 0);
+  geo.addGroup(smoothTris.length, cliffTris.length, 1);
+  geo.computeVertexNormals();
+
+  const pal = new GroundPalette(map);
+  const normals = geo.getAttribute('normal');
+  const colors = new Float32Array(pos.length);
+  for (let k = 0; k < pos.length / 3; k++) {
+    terrainColor(map, pal, pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2], tmpColor, 1 - normals.getY(k));
+    colors[k * 3] = tmpColor.r;
+    colors[k * 3 + 1] = tmpColor.g;
+    colors[k * 3 + 2] = tmpColor.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geo.computeVertexNormals();
-  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  // Smooth ground; faceted rock faces, like the boulders.
+  const mesh = new THREE.Mesh(geo, [
+    new THREE.MeshLambertMaterial({ vertexColors: true }),
+    new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
+  ]);
   mesh.receiveShadow = true;
   return mesh;
 }
@@ -367,17 +471,162 @@ function pineSnowGeo(): THREE.BufferGeometry {
   return mergeGeometries(caps.map(([r, h, y]) => new THREE.ConeGeometry(r, h, 7).translate(0, y + 0.04, 0)))!;
 }
 
-function buildRocks(map: GameMap): THREE.InstancedMesh {
-  return instanced<RockProp>(
-    new THREE.DodecahedronGeometry(1, 0),
-    map.props.rocks,
-    (r, o) => {
-      o.position.set(r.x, r.y - 0.25 * r.scale, r.z);
-      o.rotation.set(0.3, r.rot, 0.2);
-      o.scale.set(r.scale, r.scale * 0.7, r.scale * 0.9);
-    },
-    (r, c) => c.setHex(pickHex(map.layout.theme.rocks, r.tint)),
-  );
+/** Different boulder shapes per map; each is one instanced batch. */
+const BOULDER_SHAPES = 3;
+/** Ground level of a raw boulder before it's normalised: the widest part sits just above it. */
+const BOULDER_SINK = -0.2;
+
+interface BoulderGeo {
+  body: THREE.BufferGeometry;
+  /** Just the facets facing up, for a cap of moss or snow. */
+  cap: THREE.BufferGeometry | null;
+  /** Ink hull, a bit bigger. */
+  outline: THREE.BufferGeometry;
+}
+
+/**
+ * A chunky low-poly boulder: a lumpy icosahedron with a few flat fractures sliced off and flat-shaded
+ * facets. Normalised so the ground is at y = 0, the top at y = 1 and the widest part that shows has
+ * radius 1, so a rock's `scale` and `height` are exactly what you see (and what you bump into).
+ */
+function boulderGeometry(seed: number): BoulderGeo {
+  const rng = new Rng(seed);
+  const body = new THREE.IcosahedronGeometry(1, 1); // not indexed: every facet has its own corners
+  const pos = body.getAttribute('position') as THREE.BufferAttribute;
+  const cuts = Array.from({ length: 3 }, () => {
+    const a = rng.range(0, Math.PI * 2);
+    const up = rng.range(-0.2, 0.9);
+    const side = Math.sqrt(1 - up * up);
+    return { n: new THREE.Vector3(Math.cos(a) * side, up, Math.sin(a) * side), d: rng.range(0.6, 0.85) };
+  });
+  // Only a little longer than wide: the round collider has to match it from every side.
+  const stretch = rng.range(1, 1.2);
+  // Corners shared by several facets get the same lump, so the surface stays closed.
+  const lumps = new Map<string, number>();
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const key = `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`;
+    let lump = lumps.get(key);
+    if (lump === undefined) lumps.set(key, (lump = rng.range(0.85, 1.12)));
+    v.multiplyScalar(lump);
+    for (const c of cuts) {
+      const over = v.dot(c.n) - c.d;
+      if (over > 0) v.addScaledVector(c.n, -over);
+    }
+    pos.setXYZ(i, v.x * stretch, Math.max(v.y, -0.75), v.z);
+  }
+
+  let top = -Infinity;
+  let wide = 0;
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i);
+    top = Math.max(top, y);
+    if (y >= BOULDER_SINK) wide = Math.max(wide, Math.hypot(pos.getX(i), pos.getZ(i)));
+  }
+  const sy = 1 / (top - BOULDER_SINK);
+  for (let i = 0; i < pos.count; i++) pos.setXYZ(i, pos.getX(i) / wide, (pos.getY(i) - BOULDER_SINK) * sy, pos.getZ(i) / wide);
+  body.computeVertexNormals();
+
+  // Lit tops, darker undersides, and a little variation per facet so it reads as stone.
+  const normals = body.getAttribute('normal');
+  const colors = new Float32Array(pos.count * 3);
+  const capPos: number[] = [];
+  for (let f = 0; f < pos.count; f += 3) {
+    const ny = normals.getY(f);
+    const shade = 0.5 + 0.38 * (ny * 0.5 + 0.5) + rng.range(-0.07, 0.07);
+    colors.fill(shade, f * 3, f * 3 + 9);
+    if (ny > 0.55) for (let k = f; k < f + 3; k++) capPos.push(pos.getX(k), pos.getY(k), pos.getZ(k));
+  }
+  body.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  let cap: THREE.BufferGeometry | null = null;
+  if (capPos.length) {
+    cap = new THREE.BufferGeometry();
+    cap.setAttribute('position', new THREE.Float32BufferAttribute(capPos, 3));
+    cap.computeVertexNormals();
+  }
+  const outline = new THREE.BufferGeometry();
+  outline.setAttribute('position', pos.clone());
+  outline.translate(0, -0.4, 0).scale(1.07, 1.1, 1.07).translate(0, 0.4, 0);
+  return { body, cap, outline };
+}
+
+/** Solid boulders plus the loose stones (pebbles, scree), leaning with the ground, outlined in ink. */
+function buildRocks(map: GameMap): THREE.Object3D[] {
+  const { theme, seed } = map.layout;
+  const terrain = map.terrain;
+  const shapes = Array.from({ length: BOULDER_SHAPES }, (_, i) => boulderGeometry(seed + 101 + i * 7919));
+  const buckets: RockProp[][] = shapes.map(() => []);
+  for (const r of [...map.props.rocks, ...map.props.stones]) {
+    buckets[Math.min(BOULDER_SHAPES - 1, Math.floor(((r.tint * 7.31) % 1) * BOULDER_SHAPES))].push(r);
+  }
+  // Snow on every rock on snowy maps; elsewhere moss on about half of them.
+  const snowy = !!theme.snowCaps;
+  const capped = (r: RockProp) => snowy || (r.tint * 13.7) % 1 < 0.5;
+
+  const bodyMat = toonInstanced();
+  bodyMat.vertexColors = true;
+  const capMat = toonInstanced();
+  // Drawn over the same facets as the body without flickering.
+  capMat.polygonOffset = true;
+  capMat.polygonOffsetFactor = -1;
+  capMat.polygonOffsetUnits = -2;
+
+  const up = new THREE.Vector3();
+  const yAxis = new THREE.Vector3(0, 1, 0);
+  const place = (r: RockProp) => {
+    // Lean with the slope: a little for boulders out in the open, more for scree on the ridge flanks.
+    const e = 0.6;
+    const gx = (terrain.heightAt(r.x + e, r.z) - terrain.heightAt(r.x - e, r.z)) / (2 * e);
+    const gz = (terrain.heightAt(r.x, r.z + e) - terrain.heightAt(r.x, r.z - e)) / (2 * e);
+    const lean = r.radius > 0 ? 0.3 : 0.55;
+    const tilt = Math.min(lean, 0.6 / (Math.hypot(gx, gz) || 1)); // never more than ~30°
+    up.set(-gx * tilt, 1, -gz * tilt).normalize();
+    tmpObj.position.set(r.x, r.y - r.height * (0.06 + 0.3 * Math.min(1, Math.hypot(gx, gz))), r.z);
+    tmpObj.quaternion.setFromUnitVectors(yAxis, up);
+    tmpObj.rotateY(r.rot);
+    tmpObj.scale.set(r.scale, r.height, r.scale);
+    tmpObj.updateMatrix();
+    return tmpObj.matrix;
+  };
+
+  const meshes: THREE.Object3D[] = [];
+  shapes.forEach((shape, i) => {
+    const items = buckets[i];
+    if (!items.length) return;
+    const body = new THREE.InstancedMesh(shape.body, bodyMat, items.length);
+    const ink = new THREE.InstancedMesh(shape.outline, outlineMaterial(), items.length);
+    const caps = items.filter(capped);
+    const cap = shape.cap && caps.length ? new THREE.InstancedMesh(shape.cap, capMat, caps.length) : null;
+    let c = 0;
+    items.forEach((r, k) => {
+      const m = place(r);
+      body.setMatrixAt(k, m);
+      ink.setMatrixAt(k, m);
+      body.setColorAt(k, tmpColor.setHex(pickHex(theme.rocks, r.tint)));
+      if (cap && capped(r)) {
+        cap.setMatrixAt(c, m);
+        // Moss takes its colour from the map's grass, a shade darker.
+        cap.setColorAt(c++, snowy ? tmpColor.setHex(0xffffff) : tmpColor.setHex(pickHex(theme.grass, (r.tint * 5.3) % 1)).multiplyScalar(0.8));
+      }
+    });
+    for (const mesh of [body, ink, cap]) {
+      if (!mesh) continue;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      mesh.receiveShadow = mesh !== ink;
+      meshes.push(mesh);
+    }
+    body.castShadow = true;
+  });
+  // Geometry no mesh ended up using isn't freed with the world: free it now.
+  const used = new Set(meshes.map((m) => (m as THREE.InstancedMesh).geometry));
+  for (const shape of shapes) {
+    for (const geo of [shape.body, shape.outline, shape.cap]) if (geo && !used.has(geo)) geo.dispose();
+  }
+  return meshes;
 }
 
 // ---------------------------------------------------------------- bamboo
@@ -595,11 +844,16 @@ function buildCamp(map: GameMap): { group: THREE.Group; update(time: number): vo
 
 // ---------------------------------------------------------------- story buildings
 
-/** Radio cabin, clinic and research lab. Each is built facing +Z (door side), then turned to `face`. */
+/**
+ * Radio cabin, clinic and research lab (Act 2's buildings and the roads are in storyBuildings).
+ * Each is built facing +Z (door side), then turned to `face`.
+ */
 function buildLandmarks(map: GameMap): { group: THREE.Group; update(time: number): void } {
   const g = new THREE.Group();
   const blinkers: THREE.MeshBasicMaterial[] = [];
   const bubbles: THREE.Mesh[] = [];
+  const movers: ((time: number) => void)[] = [];
+  g.add(buildRoads(map));
 
   for (const l of map.layout.landmarks ?? []) {
     const b = new THREE.Group();
@@ -650,6 +904,8 @@ function buildLandmarks(map: GameMap): { group: THREE.Group; update(time: number
       part(new THREE.BoxGeometry(0.9, 0.28, 0.1), 0xe2463f, 0, 2.45, 2.04, 0);
       part(new THREE.BoxGeometry(0.28, 0.9, 0.1), 0xe2463f, 0, 2.45, 2.04, 0);
       for (const x of [-1.8, 1.8]) part(new THREE.BoxGeometry(0.7, 0.7, 0.7), 0xb07a45, x, 0.35, 2.7, 1.06).rotation.y = x;
+    } else if (l.kind !== 'lab') {
+      buildStoryBuilding(l.kind, b, part, light, blinkers, movers);
     } else {
       // Research lab: long block, dome, chimney, and a big cauldron bubbling out front.
       part(new THREE.BoxGeometry(9, 4, 6), 0xb8c4cc, 0, 2, 0);
@@ -685,6 +941,7 @@ function buildLandmarks(map: GameMap): { group: THREE.Group; update(time: number
         bubble.position.y = 1.6 + t * 1.6;
         bubble.scale.setScalar(1 - t * 0.6);
       }
+      for (const move of movers) move(time);
     },
   };
 }

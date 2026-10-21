@@ -14,6 +14,8 @@ export interface BotWorld {
   readonly bamboo: readonly BambooSpot[];
   steer(x: number, z: number, dx: number, dz: number, avoidWater: boolean): { x: number; z: number };
   detour(x: number, z: number, tx: number, tz: number): { x: number; z: number; cost: number; wall: boolean } | null;
+  /** Where buddies should stay (story: beside the cart, heading dx, dz), or null to follow the leader. */
+  guard(): { x: number; z: number; dx: number; dz: number } | null;
 }
 
 /** Anything that drives a survivor instead of a player's controls. */
@@ -46,6 +48,8 @@ export function nearest<T extends { x: number; z: number }>(items: readonly T[],
 /** A pack at least this big within PACK_RANGE makes a bot throw a firecracker. */
 const PACK_SIZE = 4;
 const PACK_RANGE = 7;
+/** Bots guard the story cart while the leader is within this of it. */
+const GUARD_LEASH = 28;
 
 /**
  * Walks a survivor towards a point the way a player would: through passes and over bridges,
@@ -181,6 +185,9 @@ export class BotBrain implements Brain {
     const spear = me.weapon === 'javelin' && me.ammo < JAVELIN.ammo ? nearest(w.javelins.filter((j) => !j.flying), me, 14) : null;
     const loot = me.crackers < CRACKER.max ? nearest(w.crackerDrops, me, 10) : null;
     const leader = nearest(w.survivors.filter((s) => !s.spec.bot && s.state === 'active'), me, Infinity);
+    // Story escort: stick by the cart (and keep it rolling) unless the leader wandered off.
+    const guard = w.guard();
+    const guarding = !!guard && !!leader && Math.hypot(leader.x - guard.x, leader.z - guard.z) < GUARD_LEASH;
 
     if (downed && (!threat || td > 2.5)) {
       goTo(downed.x, downed.z, 0.6);
@@ -197,6 +204,11 @@ export class BotBrain implements Brain {
       goTo(threat.x, threat.z, 0.9);
     } else if (threat && canThrow && td < 3) {
       goTo(me.x - (threat.x - me.x) * 2, me.z - (threat.z - me.z) * 2, 0.5);
+    } else if (guard && guarding) {
+      // Beside the cart (one each side, the third behind), a little ahead of its middle.
+      const side = SLOT_SIDE[this.slot % SLOT_SIDE.length];
+      const back = side === 0 ? -2.6 : 0.4;
+      goTo(guard.x + guard.dx * back - guard.dz * side * 2.1, guard.z + guard.dz * back + guard.dx * side * 2.1, 0.6);
     } else if (leader) {
       // Walk a little behind the leader (relative to the way ahead), on our own side.
       const ahead = w.map.route.locate(leader.x, leader.z).next;

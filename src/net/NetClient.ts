@@ -79,6 +79,15 @@ export class NetClient {
     }
   }
 
+  requestEnd(): void {
+    if (this.closed || !this.conn.open) return;
+    try {
+      this.conn.send({ t: 'end' });
+    } catch {
+      // Channel hiccup; the button can be pressed again.
+    }
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;

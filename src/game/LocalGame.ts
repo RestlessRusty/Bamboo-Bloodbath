@@ -59,6 +59,17 @@ export class LocalGame implements Session {
     if (i >= 0) this.remoteIds.splice(i, 1);
   }
 
+  /** Also called for a guest's request: the simulation checks it's still allowed. */
+  requestEnd(): void {
+    if (this.ended || !this.sim.endEarly()) return;
+    this.prev = this.curr;
+    this.curr = this.sim.snapshot();
+    this.presenter.present(this.curr.events, this.curr);
+    this.broadcast();
+    this.ended = true;
+    this.onEnd(this.curr);
+  }
+
   frame(dt: number, fps: number | null): void {
     const { renderer, input, hud } = this.ctx;
 

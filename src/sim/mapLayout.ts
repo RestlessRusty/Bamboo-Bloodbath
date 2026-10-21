@@ -8,9 +8,19 @@ export interface Circle {
 
 /** A building on the map (story locations). Solid, with flat ground around it. */
 export interface Landmark extends Circle {
-  kind: 'radio' | 'clinic' | 'lab';
+  kind: 'radio' | 'clinic' | 'lab' | 'shed' | 'silo' | 'depot' | 'pumphouse' | 'greenhouse' | 'hq' | 'factory' | 'tank';
   /** The door faces this point. */
   face: { x: number; z: number };
+}
+
+/** A dirt track (story carts roll along these): flattened, kept free of trees and rocks. */
+export interface Road {
+  /** Straight segments between the points. Keep it off hills and out of water. */
+  points: readonly { x: number; z: number }[];
+  /** Full width. */
+  width: number;
+  /** Cart rails down the middle. */
+  rails?: boolean;
 }
 
 export interface Hill extends Circle {
@@ -144,6 +154,10 @@ export interface MapLayout {
   thickets: readonly Circle[];
   /** Buildings; `r` is the solid footprint. */
   landmarks?: readonly Landmark[];
+  /** Dirt tracks (story carts). */
+  roads?: readonly Road[];
+  /** Extra spots kept free of trees and rocks (story objectives: items, machinery, hold zones). */
+  clear?: readonly Circle[];
   /** 'none': no rescue hut at the goal (story chapters that end somewhere else). Default 'hut'. */
   goalStyle?: 'hut' | 'none';
   /** Weapons on the racks along the route, in order (default: a mix of all three). */

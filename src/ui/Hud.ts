@@ -19,6 +19,8 @@ export interface HudHandlers {
   onCheckpoint(): void;
   /** Story: back to the chapter list. */
   onChapters(): void;
+  /** Quick play: every human is done, stop waiting for the bots. */
+  onEndMatch(): void;
 }
 
 interface TeamRow {
@@ -38,6 +40,10 @@ export class Hud {
   private readonly arrow: HTMLElement;
   private readonly dist: HTMLElement;
   private readonly saved: HTMLElement;
+  private readonly endBtn: HTMLButtonElement;
+  private readonly botsOut: HTMLElement;
+  /** The "End match" button has been offered this match (flash the hint only once). */
+  private endOffered = false;
   private readonly hpFill: HTMLElement;
   private readonly hpText: HTMLElement;
   private readonly ammo: HTMLElement;
@@ -83,6 +89,9 @@ export class Hud {
         <span data-ref="dist"></span>
         <span class="hud-saved" data-ref="saved"></span>
       </div>
+      <button class="btn small hud-end" data-act="end-match" data-ref="end-match" hidden>
+        End match<small data-ref="bots-out"></small>
+      </button>
       <div class="hud-status" data-ref="status"></div>
       <div class="hud-revive" data-ref="revive" hidden>
         <span data-ref="revive-text"></span>
@@ -123,6 +132,8 @@ export class Hud {
     this.arrow = this.ref('arrow');
     this.dist = this.ref('dist');
     this.saved = this.ref('saved');
+    this.endBtn = this.ref<HTMLButtonElement>('end-match');
+    this.botsOut = this.ref('bots-out');
     this.hpFill = this.ref('hp');
     this.hpText = this.ref('hptext');
     this.ammo = this.ref('ammo');
@@ -150,6 +161,7 @@ export class Hud {
       else if (act === 'next') h.onNext();
       else if (act === 'checkpoint') h.onCheckpoint();
       else if (act === 'chapters') h.onChapters();
+      else if (act === 'end-match') h.onEndMatch();
     });
   }
 
@@ -177,6 +189,8 @@ export class Hud {
     this.el.hidden = false;
     this.pausePanel.hidden = true;
     this.endPanel.hidden = true;
+    this.endBtn.hidden = true;
+    this.endOffered = false;
     this.msg.classList.remove('show');
   }
 
@@ -211,6 +225,7 @@ export class Hud {
       b.hidden = !(b.dataset.end ?? '').split(' ').some((t) => tags.has(t));
     }
     this.endPanel.classList.toggle('won', won);
+    this.endBtn.hidden = true;
     this.pausePanel.hidden = true;
     this.endPanel.hidden = false;
   }
@@ -262,6 +277,7 @@ export class Hud {
       this.setText(this.dist, active ? `${Math.round(remaining)} m` : '');
       this.setText(this.saved, this.total > 1 ? `🏠 ${snap.rescued}/${this.total}` : '');
     }
+    this.updateEndButton(snap);
 
     this.fps.hidden = fps === null;
     if (fps !== null) this.setText(this.fps, `${fps} fps`);
@@ -293,6 +309,18 @@ export class Hud {
     const pulse = 0.5 + 0.5 * Math.sin(this.time * 6);
     const v = me.state === 'downed' ? 0.55 + 0.2 * pulse : Math.max(me.hurt * 0.8, me.state === 'active' && hp < 0.25 ? 0.2 + 0.1 * pulse : 0);
     this.vignette.style.opacity = v.toFixed(2);
+  }
+
+  /** Off to the side (under the goal box), so you can keep watching the bots instead. */
+  private updateEndButton(snap: Snapshot): void {
+    const n = snap.phase === 'playing' && !snap.story ? snap.botsOut : 0;
+    this.endBtn.hidden = n === 0;
+    if (n === 0) return;
+    this.setText(this.botsOut, `${n} bot${n === 1 ? '' : 's'} still out`);
+    if (!this.endOffered) {
+      this.endOffered = true;
+      this.flash('Everyone made it! End the match, or watch the bots.', 3500);
+    }
   }
 
   private updateTeam(snap: Snapshot): void {

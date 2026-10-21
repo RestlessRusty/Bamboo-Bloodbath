@@ -2,7 +2,7 @@ import { MAX_PLAYERS, type Difficulty } from '../config';
 import { CODE_LENGTH, normalizeCode, type LobbyPlayer } from '../net/protocol';
 import { PANDA_LOOKS } from '../render/pandaModel';
 import { WEAPONS } from '../sim/weapons';
-import { difficultyButtons, el, markActive } from './dom';
+import { difficultyButtons, el, markActive, scrollHint } from './dom';
 import { MapPicker } from './MapPicker';
 
 export interface LobbyHandlers {
@@ -44,37 +44,49 @@ export class Lobby {
       'div',
       'modal lobby',
       `<div class="card lobby-card" data-ref="choose">
-        <h2>Multiplayer</h2>
-        <p class="hint">Play together on phones, no accounts. One player creates a room and shares its code.</p>
-        <button class="btn primary big" data-act="create">Create room</button>
-        <div class="join-row">
-          <input data-ref="code" maxlength="${CODE_LENGTH}" placeholder="CODE" autocomplete="off" autocapitalize="characters" spellcheck="false" />
-          <button class="btn" data-act="join">Join</button>
+        <div class="scroll-body" data-ref="choose-body">
+          <h2>Multiplayer</h2>
+          <p class="hint">Play together on phones, no accounts. One player creates a room and shares its code.</p>
+          <button class="btn primary big" data-act="create">Create room</button>
+          <div class="join-row">
+            <input data-ref="code" maxlength="${CODE_LENGTH}" placeholder="CODE" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+            <button class="btn" data-act="join">Join</button>
+          </div>
+          <p class="error" data-ref="error"></p>
         </div>
-        <p class="error" data-ref="error"></p>
-        <button class="btn ghost" data-act="leave">Back</button>
+        <div class="card-foot">
+          <button class="btn ghost" data-act="leave">Back</button>
+        </div>
       </div>
       <div class="card lobby-card" data-ref="busy" hidden>
         <h2 data-ref="busy-text">Connecting…</h2>
         <div class="spinner"></div>
         <button class="btn ghost" data-act="leave">Cancel</button>
       </div>
-      <div class="card lobby-card" data-ref="room" hidden>
-        <p class="hint">Room code</p>
-        <div class="room-code" data-ref="room-code"></div>
-        <div data-ref="map"></div>
-        <ul class="player-list" data-ref="players"></ul>
-        <div class="picker" data-ref="bots-row">
-          <span>Bot buddies</span>
-          <div class="seg" data-ref="bots"></div>
+      <div class="card lobby-card room-card" data-ref="room" hidden>
+        <div class="scroll-body room-body" data-ref="room-body">
+          <div class="room-col">
+            <p class="hint">Room code</p>
+            <div class="room-code" data-ref="room-code"></div>
+            <ul class="player-list" data-ref="players"></ul>
+          </div>
+          <div class="room-col">
+            <div data-ref="map"></div>
+            <div class="picker" data-ref="bots-row">
+              <span>Bot buddies</span>
+              <div class="seg" data-ref="bots"></div>
+            </div>
+            <div class="picker">
+              <span>Difficulty</span>
+              <div class="seg" data-ref="difficulty">${difficultyButtons()}</div>
+            </div>
+            <p class="hint" data-ref="room-hint"></p>
+          </div>
         </div>
-        <div class="picker">
-          <span>Difficulty</span>
-          <div class="seg" data-ref="difficulty">${difficultyButtons()}</div>
+        <div class="card-foot">
+          <button class="btn primary big" data-act="start" data-ref="start">Start!</button>
+          <button class="btn ghost" data-act="leave">Leave room</button>
         </div>
-        <p class="hint" data-ref="room-hint"></p>
-        <button class="btn primary big" data-act="start" data-ref="start">Start!</button>
-        <button class="btn ghost" data-act="leave">Leave room</button>
       </div>`,
     );
     this.el.hidden = true;
@@ -84,6 +96,8 @@ export class Lobby {
     this.room = this.ref('room');
     this.mapPicker = new MapPicker((dir) => h.onMap(dir));
     this.ref('map').replaceWith(this.mapPicker.el);
+    scrollHint(this.ref('choose-body'));
+    scrollHint(this.ref('room-body'));
 
     const code = this.ref<HTMLInputElement>('code');
     code.addEventListener('input', () => {

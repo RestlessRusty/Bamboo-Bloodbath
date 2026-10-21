@@ -41,6 +41,9 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   const sameOrigin = url.origin === self.location.origin;
   if (!sameOrigin && !FONT_HOSTS.includes(url.hostname)) return; // PeerJS and friends: network only
+  // Streamed audio asks for byte ranges, which the cache can't answer: network only (offline, the menu
+  // falls back to the synth tune).
+  if (req.headers.has('range')) return;
 
   if (req.mode === 'navigate') {
     event.respondWith(pageFirstFromNetwork(req));

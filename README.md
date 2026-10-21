@@ -36,6 +36,9 @@ dismiss).
    builds the game and publishes it to `https://<user>.github.io/<repo>/`.
 
 On the phone, open the URL and use the browser's *Add to Home screen* to install it fullscreen.
+In the browser, the top-right corner of the menus has **Install** (Chrome/Android: the browser's
+install prompt, once it offers one; iPhone/iPad: how to add it via Share) and a fullscreen button
+(matches go fullscreen on their own when they start).
 
 ### Offline
 
@@ -76,9 +79,10 @@ register it.
 - **Difficulty** (Easy / Normal / Hard, in the menu, story menu and room): scales the horde size, how
   hard and fast zombies are, and how many start asleep (see `DIFFICULTY` in `config.ts`). It applies to
   story chapters too. In multiplayer the host picks it.
-- **Records** (saved on the device, per map and difficulty): matches played and won, best time for a
-  won match, and most kills. Shown under the map in the menu and on the end screen. Story chapters
-  don't count.
+- **Records** (saved on the device, per map, difficulty and number of bot buddies): matches played and
+  won, best time for a won match, and most kills. Quick play → **Records** opens a card per map with a
+  Best time / Most kills switch and a difficulty × bots table; the end screen shows the line for the
+  match just played. Story chapters don't count.
 - Bridges, fords and ridge passes, plus a few metres before and after each, are always kept free of
   trees and rocks.
 

@@ -51,10 +51,37 @@ export interface PandaPose {
 
 const NOSE = 0x1d1a1a;
 
+/** Arm rest pose: hanging slightly forward and out, so the paws rest on the belly. */
+const ARM_PITCH = -0.25;
+const ARM_ROLL = 0.35;
+/** Arm mesh centre below the shoulder pivot (the lathe below is built around it, for the outline). */
+const ARM_MID = 0.155;
+
+/**
+ * Arm as one lathed piece: a round shoulder ball centred on the pivot (sunk into the torso, so it
+ * stays put while the arm swings), a tapering forearm and a round paw. Profile points are
+ * (radius, height above the pivot), bottom to top.
+ */
+function armGeometry(): THREE.LatheGeometry {
+  const pts: THREE.Vector2[] = [];
+  const paw = { y: -0.34, r: 0.105 };
+  for (const deg of [0, 30, 45, 60, 75, 90]) {
+    const a = (deg * Math.PI) / 180;
+    pts.push(new THREE.Vector2(paw.r * Math.sin(a), paw.y - paw.r * Math.cos(a)));
+  }
+  pts.push(new THREE.Vector2(0.1, -0.3), new THREE.Vector2(0.106, -0.24), new THREE.Vector2(0.118, -0.14), new THREE.Vector2(0.13, -0.05));
+  const shoulder = 0.135;
+  for (const deg of [0, 30, 45, 60, 75, 90]) {
+    const a = (deg * Math.PI) / 180;
+    pts.push(new THREE.Vector2(Math.max(0, shoulder * Math.cos(a)), shoulder * Math.sin(a)));
+  }
+  return new THREE.LatheGeometry(pts, 12).translate(0, ARM_MID, 0);
+}
+
 interface PandaGeos {
   sphere: THREE.SphereGeometry;
   band: THREE.SphereGeometry;
-  arm: THREE.CapsuleGeometry;
+  arm: THREE.LatheGeometry;
   leg: THREE.CapsuleGeometry;
   smile: THREE.TorusGeometry;
 }
@@ -63,7 +90,7 @@ const geos = (): PandaGeos =>
   (geoCache ??= {
     sphere: sharedGeometry(new THREE.SphereGeometry(1, 20, 14)),
     band: sharedGeometry(new THREE.SphereGeometry(1, 20, 6, 0, Math.PI * 2, 0.62, 0.42)),
-    arm: sharedGeometry(new THREE.CapsuleGeometry(0.11, 0.2, 4, 10)),
+    arm: sharedGeometry(armGeometry()),
     leg: sharedGeometry(new THREE.CapsuleGeometry(0.13, 0.12, 4, 10)),
     smile: sharedGeometry(new THREE.TorusGeometry(0.04, 0.01, 4, 12, Math.PI)),
   });
@@ -181,22 +208,25 @@ export class PandaModel {
     smile.rotation.z = Math.PI;
     H.add(smile);
 
-    // Arms pivot at the shoulder; rotation order YXZ = pitch first, then yaw around the body.
+    // Arms pivot in the middle of the shoulder ball, inside the torso, so they grow out of the
+    // shoulder band instead of touching the body at one point. Rotation order YXZ = pitch first,
+    // then yaw around the body.
     for (const [arm, side] of [
       [this.armL, 1],
       [this.armR, -1],
     ] as const) {
-      arm.position.set(0.37 * side, 0.79, 0.03);
+      arm.position.set(0.3 * side, 0.8, 0.03);
       arm.rotation.order = 'YXZ';
       this.body.add(arm);
       const m = new THREE.Mesh(G.arm, toon(P.dark));
-      m.position.y = -0.16;
+      m.position.y = -ARM_MID;
       m.castShadow = true;
       arm.add(m);
-      addOutline(m, 1.14);
+      addOutline(m, 1.1);
     }
     this.armRBase = this.armR.position.clone();
 
+    // In the paw.
     this.holder.position.set(0, -0.34, 0.02);
     this.armR.add(this.holder);
     this.setWeapon(weapon, true);
@@ -236,8 +266,8 @@ export class PandaModel {
     this.tail.rotation.y = Math.sin(this.idle * 3 + this.walk) * 0.35;
 
     const armsBack = pose.dashing ? 0.9 : 0;
-    this.armL.rotation.set(-s * 0.7 * st + armsBack, 0, 0.2);
-    this.armR.rotation.set(s * 0.7 * st + armsBack, 0, -0.2);
+    this.armL.rotation.set(ARM_PITCH - s * 0.7 * st + armsBack, 0, ARM_ROLL);
+    this.armR.rotation.set(ARM_PITCH + s * 0.7 * st + armsBack, 0, -ARM_ROLL);
     this.armR.position.copy(this.armRBase);
     if (pose.attackT >= 0 && !pose.downed) this.poseAttack(clamp(pose.attackT, 0, 1));
 
@@ -265,6 +295,8 @@ export class PandaModel {
   }
 
   private poseAttack(t: number): void {
+    // Arms tuck in during the swing and are back at the rest splay when it ends.
+    const splay = ARM_ROLL * (1 - Math.sin(Math.PI * t));
     if (this.weapon === 'knife') {
       // Wind up to the right, slash across, recover.
       let yaw: number;
@@ -274,20 +306,20 @@ export class PandaModel {
       else {
         const r = easeOut(seg(t, 0.55, 1));
         yaw = lerp(1.0, 0, r);
-        pitch = lerp(-1.25, 0, r);
+        pitch = lerp(-1.25, ARM_PITCH, r);
       }
-      this.armR.rotation.set(pitch, yaw, 0);
+      this.armR.rotation.set(pitch, yaw, -splay);
       this.body.rotation.y = yaw * 0.25;
     } else if (this.weapon === 'axe') {
       // Raise overhead, chop down hard, recover.
       let pitch: number;
-      if (t < 0.4) pitch = lerp(0, -3.3, easeOut(seg(t, 0, 0.4)));
+      if (t < 0.4) pitch = lerp(ARM_PITCH, -3.3, easeOut(seg(t, 0, 0.4)));
       else if (t < 0.6) {
         const u = seg(t, 0.4, 0.6);
         pitch = lerp(-3.3, -0.8, u * u);
-      } else pitch = lerp(-0.8, 0, easeOut(seg(t, 0.6, 1)));
-      this.armR.rotation.set(pitch, 0.25, 0);
-      this.armL.rotation.set(pitch, -0.25, 0);
+      } else pitch = lerp(-0.8, ARM_PITCH, easeOut(seg(t, 0.6, 1)));
+      this.armR.rotation.set(pitch, 0.25, -splay);
+      this.armL.rotation.set(pitch, -0.25, splay);
       if (t > 0.45 && t < 0.75) this.body.rotation.x = this.lean + 0.2;
     } else {
       // Javelin: arm back, then hurl over the shoulder.
@@ -295,7 +327,7 @@ export class PandaModel {
       if (t < 0.4) pitch = lerp(0, 0.9, easeOut(seg(t, 0, 0.4)));
       else if (t < 0.6) pitch = lerp(0.9, -1.6, easeOut(seg(t, 0.4, 0.6)));
       else pitch = lerp(-1.6, 0, easeOut(seg(t, 0.6, 1)));
-      this.armR.rotation.set(pitch - 0.3, 0, -0.2);
+      this.armR.rotation.set(pitch - 0.3, 0, -ARM_ROLL);
       this.body.rotation.y = t < 0.45 ? -0.35 : lerp(-0.35, 0.2, seg(t, 0.45, 0.6));
     }
   }

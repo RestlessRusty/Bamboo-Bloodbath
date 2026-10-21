@@ -5,7 +5,11 @@ import type { Settings } from '../settings';
 import { refOf } from '../sim/maps';
 import type { Chapter } from '../sim/story/types';
 import type { StoryProgress } from '../storyProgress';
-import { difficultyButtons, el, markActive } from './dom';
+import { difficultyButtons, el, markActive, scrollHint } from './dom';
+
+/** Chapters per act, and the act headings in the chapter list (a heading shows only once its act has chapters). */
+const ACT_SIZE = 5;
+const ACT_NAMES = ['Act 1: Find the Cure', 'Act 2: Root of the Problem'];
 
 export interface StoryMenuHandlers {
   onPlay(chapter: number): void;
@@ -38,23 +42,27 @@ export class StoryMenu {
       'menu',
       `<div class="menu-panel story-menu">
         <h1 class="logo story-logo"><span>Find the</span><span class="blood">Cure</span></h1>
-        <ol class="chapter-list" data-ref="list"></ol>
-        <div class="map-picker">
+        <div class="scroll-body chapter-scroll" data-ref="scroll">
+          <div class="chapter-acts" data-ref="list"></div>
+        </div>
+        <div class="story-setup">
           <canvas class="map-mini" width="80" height="80" data-ref="mini"></canvas>
-          <p class="hint" data-ref="blurb"></p>
-        </div>
-        <div class="picker">
-          <span>Bot buddies</span>
-          <div class="seg" data-ref="bots">
-            <button data-act="bots" data-v="0">0</button>
-            <button data-act="bots" data-v="1">1</button>
-            <button data-act="bots" data-v="2">2</button>
-            <button data-act="bots" data-v="3">3</button>
+          <div class="story-setup-info">
+            <p class="hint small" data-ref="blurb"></p>
+            <div class="picker">
+              <span>Bot buddies</span>
+              <div class="seg" data-ref="bots">
+                <button data-act="bots" data-v="0">0</button>
+                <button data-act="bots" data-v="1">1</button>
+                <button data-act="bots" data-v="2">2</button>
+                <button data-act="bots" data-v="3">3</button>
+              </div>
+            </div>
+            <div class="picker">
+              <span>Difficulty</span>
+              <div class="seg" data-ref="difficulty">${difficultyButtons()}</div>
+            </div>
           </div>
-        </div>
-        <div class="picker">
-          <span>Difficulty</span>
-          <div class="seg" data-ref="difficulty">${difficultyButtons()}</div>
         </div>
         <div class="menu-buttons">
           <button class="btn primary big" data-act="play" data-ref="play">Play</button>
@@ -68,6 +76,7 @@ export class StoryMenu {
     this.canvas = this.ref<HTMLCanvasElement>('mini');
     this.blurb = this.ref('blurb');
     this.playBtn = this.ref<HTMLButtonElement>('play');
+    scrollHint(this.ref('scroll'));
 
     this.el.addEventListener('click', (e) => {
       const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
@@ -103,6 +112,7 @@ export class StoryMenu {
     const want = chapter ?? (firstOpen >= 0 ? firstOpen : progress.unlocked - 1);
     this.el.hidden = false;
     this.select(Math.max(0, Math.min(progress.unlocked - 1, want)));
+    this.list.querySelector('.chapter-btn.active')?.scrollIntoView({ block: 'nearest' });
   }
 
   hide(): void {
@@ -123,8 +133,21 @@ export class StoryMenu {
   private refresh(): void {
     const p = this.progress;
     if (!p) return;
+    // Rebuilding empties the list for a moment, which would snap a scrolled list back to the top.
+    const scroller = this.ref('scroll');
+    const scrolled = scroller.scrollTop;
     this.list.innerHTML = '';
+    let act: HTMLElement | null = null;
     this.chapters.forEach((c, i) => {
+      if (i % ACT_SIZE === 0) {
+        const n = i / ACT_SIZE;
+        const section = el('section', 'chapter-act');
+        const head = el('h3', 'act-head');
+        head.textContent = ACT_NAMES[n] ?? `Act ${n + 1}`;
+        act = el('ol', 'chapter-list');
+        section.append(head, act);
+        this.list.appendChild(section);
+      }
       const locked = i >= p.unlocked;
       const li = el('li');
       const b = el('button', `chapter-btn${i === this.selected ? ' active' : ''}${p.done[i] ? ' done' : ''}`);
@@ -136,8 +159,9 @@ export class StoryMenu {
       b.querySelector('.chapter-title')!.textContent = locked ? '???' : c.title;
       b.querySelector('.chapter-mark')!.textContent = locked ? '🔒' : p.done[i] ? '✓' : '';
       li.appendChild(b);
-      this.list.appendChild(li);
+      act?.appendChild(li);
     });
+    scroller.scrollTop = scrolled;
     const c = this.chapters[this.selected];
     const rules = [c.timeLimit ? `${Math.round(c.timeLimit / 60)} min clock` : 'No clock', c.map.name].join(' · ');
     this.blurb.textContent = `${c.blurb} (${rules})`;

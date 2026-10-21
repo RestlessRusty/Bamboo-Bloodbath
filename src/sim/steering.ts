@@ -8,13 +8,16 @@ export class Obstacles {
   private maxR = 0;
 
   constructor(list: readonly Circle[]) {
-    for (const c of list) {
-      const k = this.key(Math.floor(c.x / CELL), Math.floor(c.z / CELL));
-      let cell = this.cells.get(k);
-      if (!cell) this.cells.set(k, (cell = []));
-      cell.push(c);
-      this.maxR = Math.max(this.maxR, c.r);
-    }
+    for (const c of list) this.add(c);
+  }
+
+  /** One more (e.g. story machinery placed after the map is built). */
+  add(c: Circle): void {
+    const k = this.key(Math.floor(c.x / CELL), Math.floor(c.z / CELL));
+    let cell = this.cells.get(k);
+    if (!cell) this.cells.set(k, (cell = []));
+    cell.push(c);
+    this.maxR = Math.max(this.maxR, c.r);
   }
 
   /** Obstacles whose edge is within `r` of (x, z). Reuses `out`. */

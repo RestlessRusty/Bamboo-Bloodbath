@@ -1,6 +1,6 @@
 import { requestTiltPermission } from '../input/InputManager';
 import type { ControlScheme, Quality, Settings } from '../settings';
-import { el } from './dom';
+import { el, scrollHint } from './dom';
 
 const HINTS: Record<ControlScheme, string> = {
   joystick:
@@ -25,44 +25,49 @@ export class SettingsPanel {
       'div',
       'modal',
       `<div class="card settings">
-        <h2>Settings</h2>
-        <div class="row">
-          <span class="row-label">Controls</span>
-          <div class="seg" data-setting="controls">
-            <button data-v="joystick">Joystick</button>
-            <button data-v="tilt">Tilt</button>
-            <button data-v="tap">Tap &amp; swipe</button>
+        <div class="scroll-body" data-ref="body">
+          <h2>Settings</h2>
+          <div class="row">
+            <span class="row-label">Controls</span>
+            <div class="seg" data-setting="controls">
+              <button data-v="joystick">Joystick</button>
+              <button data-v="tilt">Tilt</button>
+              <button data-v="tap">Tap &amp; swipe</button>
+            </div>
           </div>
-        </div>
-        <p class="hint" data-ref="hint"></p>
-        <div class="row" data-ref="tilt-row">
-          <span class="row-label">Tilt</span>
-          <label class="check"><input type="checkbox" data-ref="flip" /> Flip direction</label>
-          <button class="btn small" data-act="calibrate">Recalibrate</button>
-        </div>
-        <div class="row">
-          <span class="row-label">Graphics</span>
-          <div class="seg" data-setting="quality">
-            <button data-v="low">Fast</button>
-            <button data-v="high">Pretty</button>
+          <p class="hint" data-ref="hint"></p>
+          <div class="row" data-ref="tilt-row">
+            <span class="row-label">Tilt</span>
+            <label class="check"><input type="checkbox" data-ref="flip" /> Flip direction</label>
+            <button class="btn small" data-act="calibrate">Recalibrate</button>
           </div>
+          <div class="row">
+            <span class="row-label">Graphics</span>
+            <div class="seg" data-setting="quality">
+              <button data-v="low">Fast</button>
+              <button data-v="high">Pretty</button>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">Audio</span>
+            <label class="check"><input type="checkbox" data-ref="sound" /> Sounds</label>
+            <label class="check"><input type="checkbox" data-ref="music" /> Music</label>
+            <label class="check"><input type="checkbox" data-ref="vibration" /> Vibration</label>
+          </div>
+          <div class="row">
+            <span class="row-label">FPS</span>
+            <label class="check"><input type="checkbox" data-ref="fps" /> Show counter</label>
+          </div>
+          <p class="hint small">On a PC: WASD / arrows to move (hold C to sneak), Space = attack, Shift = dash, E = firecracker, Esc = pause. Gamepads work too.</p>
         </div>
-        <div class="row">
-          <span class="row-label">Audio</span>
-          <label class="check"><input type="checkbox" data-ref="sound" /> Sounds</label>
-          <label class="check"><input type="checkbox" data-ref="music" /> Music</label>
-          <label class="check"><input type="checkbox" data-ref="vibration" /> Vibration</label>
+        <div class="card-foot">
+          <button class="btn primary" data-act="close">Done</button>
         </div>
-        <div class="row">
-          <span class="row-label">FPS</span>
-          <label class="check"><input type="checkbox" data-ref="fps" /> Show counter</label>
-        </div>
-        <p class="hint small">On a PC: WASD / arrows to move (hold C to sneak), Space = attack, Shift = dash, E = firecracker, Esc = pause. Gamepads work too.</p>
-        <button class="btn primary" data-act="close">Done</button>
       </div>`,
     );
     this.el.hidden = true;
     parent.appendChild(this.el);
+    scrollHint(this.ref('body'));
 
     this.el.addEventListener('click', (e) => void this.onClick(e));
     const toggles: [string, 'flipTilt' | 'showFps' | 'sound' | 'music' | 'vibration'][] = [

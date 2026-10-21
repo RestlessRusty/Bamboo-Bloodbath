@@ -7,7 +7,7 @@ interface Said {
   text: string;
 }
 
-const SPEAKER_CLASS: Record<string, string> = { you: 'you', doc: 'doc', radio: 'radio', buddy: 'buddy' };
+const SPEAKER_CLASS: Record<string, string> = { you: 'you', doc: 'doc', radio: 'radio', buddy: 'buddy', bristle: 'bristle' };
 /** Most lines waiting at once; older ones are dropped if the story gets ahead of the reader. */
 const MAX_QUEUE = 6;
 
@@ -66,7 +66,7 @@ export class StoryHud {
   start(chapter: Chapter, you: string, buddy: string | null): void {
     this.reset();
     this.chapter = chapter;
-    this.names = { you, doc: 'Doc Mapo', radio: 'Radio', buddy: buddy ?? 'Buddy' };
+    this.names = { you, doc: 'Doc Mapo', radio: 'Radio', buddy: buddy ?? 'Buddy', bristle: 'Prof. Bristle' };
   }
 
   /** Leaving the chapter: hide everything and forget queued lines. */
@@ -107,18 +107,36 @@ export class StoryHud {
     }
     let text = stage.label;
     if (stage.kind === 'collect') text += ` (${s.got}/${s.need})`;
+    else if (stage.kind === 'activate') text += ` (${stage.noun} ${s.got}/${s.need})`;
     this.setText(this.objText, text);
 
     let sub = '';
-    if (s.waitDoc) sub = 'Wait for Doc!';
-    else if (stage.kind === 'hold') {
+    let warn = false;
+    if (s.waitDoc) {
+      sub = 'Wait for Doc!';
+      warn = true;
+    } else if (stage.kind === 'hold') {
       const left = stage.time * (1 - s.hold);
       sub = s.holding ? `${formatTime(left)} to go` : `Get back inside the circle! (${formatTime(left)} to go)`;
+      warn = !s.holding;
+    } else if (stage.kind === 'activate') {
+      sub = s.holding ? 'Working on it… stay put!' : s.hold > 0 ? 'Get back to it before it winds down!' : '';
+      warn = !s.holding && s.hold > 0;
+    } else if (stage.kind === 'escort' && s.cart) {
+      const left = `${Math.ceil(s.cart.left)} m to go`;
+      sub =
+        s.cart.state === 'rolling'
+          ? `Rolling… ${left}`
+          : s.cart.state === 'jammed'
+            ? `Zombies on the cart! Clear them off! (${left})`
+            : `Walk next to the cart to push it (${left})`;
+      warn = s.cart.state !== 'rolling';
     }
     this.setText(this.objSub, sub);
-    this.objSub.classList.toggle('warn', s.waitDoc || (stage.kind === 'hold' && !s.holding));
-    this.objBar.hidden = stage.kind !== 'hold';
-    if (stage.kind === 'hold') this.objFill.style.width = `${s.hold * 100}%`;
+    this.objSub.classList.toggle('warn', warn);
+    const bar = stage.kind === 'hold' || stage.kind === 'escort' || (stage.kind === 'activate' && s.hold > 0);
+    this.objBar.hidden = !bar;
+    if (bar) this.objFill.style.width = `${s.hold * 100}%`;
     // Sit below the clock when there is one.
     this.obj.classList.toggle('below-timer', snap.timeLeft >= 0);
   }

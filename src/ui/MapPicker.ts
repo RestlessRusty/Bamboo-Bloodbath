@@ -8,7 +8,6 @@ export class MapPicker {
   private readonly canvas: HTMLCanvasElement;
   private readonly name: HTMLElement;
   private readonly blurb: HTMLElement;
-  private readonly note: HTMLElement;
   private shown: MapPick | null = null;
 
   constructor(onCycle: (dir: number) => void) {
@@ -23,13 +22,11 @@ export class MapPicker {
           <button class="arrow-btn" data-map="1" aria-label="Next map">›</button>
         </div>
         <p class="hint small"></p>
-        <p class="map-note" hidden></p>
       </div>`,
     );
     this.canvas = this.el.querySelector('canvas')!;
     this.name = this.el.querySelector('b')!;
     this.blurb = this.el.querySelector('.hint')!;
-    this.note = this.el.querySelector('.map-note')!;
     this.el.addEventListener('click', (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-map]');
       if (b && !b.disabled) onCycle(Number(b.dataset.map) || 0);
@@ -46,11 +43,5 @@ export class MapPicker {
     this.name.textContent = info.name;
     this.blurb.textContent = info.blurb;
     drawMinimap(this.canvas, valid ? previewMap(pick) : null);
-  }
-
-  /** Extra line under the description (personal records); empty hides it. */
-  setNote(text: string): void {
-    this.note.textContent = text;
-    this.note.hidden = !text;
   }
 }

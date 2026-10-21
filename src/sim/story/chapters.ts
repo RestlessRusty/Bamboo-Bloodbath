@@ -1,9 +1,27 @@
-import { EMBER_WOODS, FIREFLY_FEN, FROSTBITE_RIDGE, RESEARCH_STATION, WILLOW_RIVER } from '../maps/story';
+import {
+  BRISTLE_WORKS,
+  EMBER_WOODS,
+  FIREFLY_FEN,
+  FROSTBITE_RIDGE,
+  GLASSHOUSES,
+  MOONLIT_RESERVOIR,
+  QUARRY_ROAD,
+  QUARRY_ROAD_POINTS,
+  RESEARCH_STATION,
+  SPROUT_FARM,
+  WILLOW_RIVER,
+  WORKS_ROAD_POINTS,
+} from '../maps/story';
 import type { Chapter } from './types';
 
+/** The quarry road (chapter 7) and the works road (chapter 10), split into the cart's legs. */
+const QUARRY = QUARRY_ROAD_POINTS;
+const WORKS = WORKS_ROAD_POINTS;
+
 /**
- * "Find the Cure": the story campaign. Each chapter is one map with a list of objectives done in
- * order. Every objective has a HUD label, so the dialogue and the cards can be skipped freely.
+ * The story campaign. Act 1 "Find the Cure" (chapters 1–5), Act 2 "Root of the Problem" (6–10).
+ * Each chapter is one map with a list of objectives done in order. Every objective has a HUD label,
+ * so the dialogue and the cards can be skipped freely.
  */
 export const CHAPTERS: readonly Chapter[] = [
   // ------------------------------------------------------------------ 1
@@ -141,6 +159,7 @@ export const CHAPTERS: readonly Chapter[] = [
     map: FROSTBITE_RIDGE,
     art: 'mountain',
     timeLimit: 600,
+    timeoutText: 'Time’s up! The storm caught you.',
     horde: { base: 9, perSurvivor: 6, progressBonus: 0.5, max: 45 },
     sleepShare: 0.6,
     doc: { spawn: { x: 66, z: 70 } },
@@ -272,6 +291,7 @@ export const CHAPTERS: readonly Chapter[] = [
     map: RESEARCH_STATION,
     art: 'lab',
     timeLimit: null,
+    wonText: 'The cure is brewing. You did it!',
     // Lighter roaming horde: the hold-out waves on top of it are the real fight.
     horde: { base: 8, perSurvivor: 5, progressBonus: 0.5, max: 40 },
     sleepShare: 0.45,
@@ -319,7 +339,427 @@ export const CHAPTERS: readonly Chapter[] = [
     outro: [
       { title: 'The cure', text: 'The cure works! One whiff and zombie pandas turn back into regular pandas.' },
       { text: 'Regular, extremely hungry pandas who haven’t eaten in weeks.' },
-      { text: 'The pandas are saved. The bamboo, less so.' },
+      { text: 'Doc nibbles a fresh bamboo shoot, frowns, and sniffs it. “This isn’t natural. Somebody did this.”', art: 'sniff' },
+      { title: 'To be continued…', text: 'The pandas are saved. The bamboo, less so. And somebody, somewhere, is to blame.', art: 'sniff' },
+    ],
+  },
+
+  // ================================================================== Act 2: Root of the Problem
+
+  // ------------------------------------------------------------------ 6
+  {
+    title: 'Side Effects',
+    blurb: 'Sneak onto a suspicious farm and steal fertilizer samples.',
+    map: SPROUT_FARM,
+    art: 'farm',
+    timeLimit: null,
+    horde: { base: 9, perSurvivor: 7, progressBonus: 0.5, max: 50 },
+    sleepShare: 0.6,
+    doc: { spawn: { x: -70, z: 70 } },
+    stages: [
+      {
+        kind: 'reach',
+        label: 'Get Doc to the red barn (across the canal, north)',
+        at: { x: 20, z: -15 },
+        r: 6,
+        doc: 'follow',
+        say: [
+          { who: 'doc', text: 'Every cured panda says the same thing: the bamboo tasted funny. Funny like fertilizer.' },
+          { who: 'doc', text: 'This farm grows the greenest bamboo for miles. Suspiciously green.' },
+          { who: 'buddy', text: 'Is it me, or are those stalks taller than a minute ago?' },
+        ],
+        done: [{ who: 'doc', text: 'Sacks and sacks of something called MegaSprout. Bring me samples from the fields!' }],
+      },
+      {
+        kind: 'collect',
+        label: 'Grab MegaSprout sacks from around the farm',
+        item: 'sack',
+        spots: [
+          { x: -36, z: -46 },
+          { x: 52, z: -52 },
+          { x: 56, z: 42 },
+        ],
+        doc: 'wait',
+        docPost: { x: 20, z: -17 },
+        checkpoint: { x: 16, z: -10 },
+        say: [
+          { who: 'doc', text: 'Three sacks, from three different fields. I’ll hide by the barn.' },
+          { who: 'you', text: 'Heavy, smelly sacks. Living the dream.' },
+        ],
+      },
+      {
+        kind: 'hold',
+        label: 'Guard the barn while Doc tests the samples',
+        at: { x: 20, z: -14 },
+        r: 10,
+        time: 45,
+        waveEvery: 7,
+        waveSize: 2,
+        checkpoint: { x: 14, z: -6 },
+        say: [{ who: 'doc', text: 'Got them! Now keep everything with teeth away from my test tubes.' }],
+        cues: [
+          { at: 0.3, line: { who: 'doc', text: 'Hmm. There’s zombie in this fertilizer. Lots of zombie.' } },
+          { at: 0.55, line: { who: 'bristle', text: 'Attention, trespassers! This is Professor Bristle of Bristle Bio. Please stop touching my fertilizer.' } },
+          { at: 0.8, line: { who: 'bristle', text: 'MegaSprout grows bamboo twice as fast! Side effects: none we’ll admit to.' } },
+        ],
+        done: [
+          { who: 'doc', text: 'It’s him! The bad bamboo is HIS fertilizer!' },
+          { who: 'doc', text: 'Let’s go before he sends more… customers.' },
+        ],
+      },
+      {
+        kind: 'reach',
+        label: 'Escort Doc to the trail hut (north-east)',
+        at: { x: 72, z: -72 },
+        r: 5,
+        doc: 'follow',
+        checkpoint: { x: 14, z: -6 },
+        say: [{ who: 'buddy', text: 'They’re waking up all over the fields!' }],
+      },
+    ],
+    intro: [
+      { title: 'Chapter 6: Side Effects', text: 'The cured pandas are happy, hungry and a bit confused. All of them say the bamboo tasted funny.' },
+      { text: 'Doc follows the funny taste to a farm across the canal, where the bamboo grows a little too well.' },
+    ],
+    outro: [
+      { title: 'MegaSprout', text: 'Doc’s tests are clear: MegaSprout turns pandas into zombies. And Bristle Bio sells it by the cartload.', art: 'bristle' },
+      { text: 'His carts deliver it all over the valley. “So,” says Doc, “we use his carts to deliver the cure instead.”', art: 'cart' },
+    ],
+  },
+
+  // ------------------------------------------------------------------ 7
+  {
+    title: 'Special Delivery',
+    blurb: 'Push a hijacked delivery cart full of cure to Bristle’s depot.',
+    map: QUARRY_ROAD,
+    art: 'cart',
+    timeLimit: null,
+    horde: { base: 10, perSurvivor: 7, progressBonus: 0.5, max: 50 },
+    sleepShare: 0.5,
+    doc: { spawn: { x: -72, z: 74 } },
+    devices: [
+      // 0, 1: the levers for the first gate. 2: that gate. 3: the gate before the depot.
+      { kind: 'lever', x: 26, z: 6, face: { x: 44, z: 6 } },
+      { kind: 'lever', x: 62, z: 10, face: { x: 44, z: 6 } },
+      { kind: 'gate', x: 40.5, z: 2, face: { x: 48, z: 2 } },
+      { kind: 'gate', x: -20, z: -51, face: { x: -20, z: -43 } },
+    ],
+    stages: [
+      {
+        kind: 'reach',
+        label: 'Sneak up on the parked delivery cart',
+        at: QUARRY[0],
+        r: 6,
+        doc: 'follow',
+        say: [
+          { who: 'doc', text: 'There’s a MegaSprout cart parked on the quarry road. Nobody’s guarding it. Probably.' },
+          { who: 'you', text: 'And we just… borrow it?' },
+          { who: 'doc', text: 'We swap the fertilizer for cure, and his depot ships it out. Bristle delivers his own antidote!' },
+        ],
+        done: [{ who: 'doc', text: 'Barrels swapped! Now push. Gently. Those are my good barrels.' }],
+      },
+      {
+        kind: 'escort',
+        label: 'Push the cart along the quarry road',
+        path: QUARRY.slice(0, 5),
+        waveEvery: 10,
+        waveSize: 2,
+        checkpoint: { x: -46, z: 56 },
+        say: [{ who: 'doc', text: 'It only rolls while someone walks right beside it. And zombies on it jam the wheels.' }],
+        cues: [
+          { at: 0.5, line: { who: 'buddy', text: 'So we’re delivery pandas now?' } },
+          { at: 0.9, line: { who: 'doc', text: 'A gate! Of course there’s a gate.' } },
+        ],
+      },
+      {
+        kind: 'activate',
+        label: 'Pull both gate levers',
+        devices: [0, 1],
+        noun: 'Levers',
+        time: 5,
+        waveSize: 2,
+        opens: [2],
+        checkpoint: { x: 38, z: 12 },
+        say: [{ who: 'doc', text: 'Two levers, one each side of the road. Bristle loves paperwork.' }],
+        after: [{ who: 'doc', text: 'One more!' }],
+        done: [{ who: 'doc', text: 'Gate’s up! Roll on!' }],
+      },
+      {
+        kind: 'escort',
+        label: 'Push the cart through the pass',
+        path: QUARRY.slice(4, 9),
+        waveEvery: 9,
+        waveSize: 2,
+        checkpoint: { x: 38, z: 12 },
+        cues: [
+          { at: 0.4, line: { who: 'bristle', text: 'Depot here. Cart seven, you’re late. And you smell… minty?' } },
+          { at: 0.9, line: { who: 'doc', text: 'Another gate, and this one’s locked. Give me a minute with my hairpin.' } },
+        ],
+      },
+      {
+        kind: 'hold',
+        label: 'Guard the gate while Doc picks the lock',
+        at: { x: -14, z: -45 },
+        r: 9,
+        time: 40,
+        waveEvery: 6,
+        waveSize: 2,
+        doc: 'wait',
+        docPost: { x: -19, z: -49.5 },
+        opens: [3],
+        checkpoint: { x: -8, z: -40 },
+        cues: [{ at: 0.5, line: { who: 'doc', text: 'Click… no. Click… no… Click… almost…' } }],
+        done: [{ who: 'doc', text: 'Click! We’re in.' }],
+      },
+      {
+        kind: 'escort',
+        label: 'Deliver the cart to the depot',
+        path: QUARRY.slice(8),
+        waveEvery: 8,
+        waveSize: 3,
+        doc: 'follow',
+        checkpoint: { x: -8, z: -40 },
+        done: [
+          { who: 'bristle', text: 'Why does this delivery smell like CURE?!' },
+          { who: 'doc', text: 'Signed, sealed, delivered!' },
+        ],
+      },
+    ],
+    intro: [
+      { title: 'Chapter 7: Special Delivery', text: 'Bristle’s carts carry MegaSprout from his farms to his depot, and from there all over the valley.' },
+      { text: 'Doc has a plan: fill one with cure barrels and let Bristle deliver it himself.' },
+    ],
+    outro: [
+      { title: 'Return to sender', text: 'Bristle’s own carts are delivering the cure now. Panda by panda, the valley wakes up.' },
+      { text: 'Bristle is not amused. Over every loudspeaker, he promises to put MegaSprout “in the water. ALL the water.”', art: 'bristle' },
+    ],
+  },
+
+  // ------------------------------------------------------------------ 8
+  {
+    title: 'Lights Out',
+    blurb: 'Switch off Bristle’s pumps at the reservoir before dawn.',
+    map: MOONLIT_RESERVOIR,
+    art: 'pumps',
+    timeLimit: 540,
+    timeoutText: 'Dawn broke, and the valley had MegaSprout with breakfast…',
+    horde: { base: 10, perSurvivor: 7, progressBonus: 0.5, max: 50 },
+    sleepShare: 0.55,
+    doc: { spawn: { x: 0, z: 74 } },
+    devices: [
+      { kind: 'pump', x: 4, z: 23, face: { x: 0, z: -6 } },
+      { kind: 'pump', x: -30, z: -2, face: { x: 0, z: -6 } },
+      { kind: 'pump', x: 30, z: -14, face: { x: 0, z: -6 } },
+    ],
+    stages: [
+      {
+        kind: 'activate',
+        label: 'Switch off the MegaSprout pumps round the reservoir',
+        devices: [0, 1, 2],
+        noun: 'Pumps',
+        time: 5,
+        waveSize: 3,
+        doc: 'follow',
+        say: [
+          { who: 'doc', text: 'Three pumps, pouring MegaSprout into the reservoir. Every tap in the valley drinks from it.' },
+          { who: 'bristle', text: 'Good evening! Please enjoy your complimentary MegaSprout water.' },
+          { who: 'you', text: 'Lights out, Professor.' },
+        ],
+        after: [
+          { who: 'doc', text: 'One down! The water smells less… green already.' },
+          { who: 'buddy', text: 'Two! The zombies really don’t like us doing this.' },
+        ],
+        done: [{ who: 'doc', text: 'All three off! Now let’s undo the damage.' }],
+      },
+      {
+        kind: 'reach',
+        label: 'Get Doc to the pump house (north shore)',
+        at: { x: 0, z: -50 },
+        r: 8,
+        doc: 'follow',
+        checkpoint: { x: -36, z: -26 },
+        say: [{ who: 'doc', text: 'His pump house can push cure into the water just as well. Get me there!' }],
+      },
+      {
+        kind: 'hold',
+        label: 'Hold the pump house while Doc pours in the cure',
+        at: { x: 0, z: -50 },
+        r: 12,
+        time: 100,
+        waveEvery: 6,
+        waveSize: 2,
+        doc: 'wait',
+        docPost: { x: 0, z: -58 },
+        checkpoint: { x: 0, z: -42 },
+        say: [{ who: 'doc', text: 'Cure in… valves open… this takes a little while.' }],
+        cues: [
+          { at: 0.3, line: { who: 'bristle', text: 'Is someone in my pump house? Security! SECURITY!' } },
+          { at: 0.55, line: { who: 'buddy', text: 'His security is just more zombies. Lots more zombies.' } },
+          { at: 0.8, line: { who: 'doc', text: 'The water’s turning blue! Proper blue!' } },
+        ],
+        done: [{ who: 'doc', text: 'Done! The reservoir is clean, and full of cure.' }],
+      },
+    ],
+    intro: [
+      { title: 'Chapter 8: Lights Out', text: 'Night at the reservoir. Bristle’s pumps hum along the shore, glowing a sickly green.' },
+      { text: 'At dawn the whole valley turns on its taps. Nine minutes, says Doc. Maybe eight.' },
+    ],
+    outro: [
+      { title: 'Clean water', text: 'The valley drinks the cure with breakfast. Zombies yawn, stretch, and ask what day it is.' },
+      { text: 'To cure every last field, Doc needs Bristle’s original formula. It’s locked in his glasshouses.', art: 'glasshouse' },
+    ],
+  },
+
+  // ------------------------------------------------------------------ 9
+  {
+    title: 'Glasshouses',
+    blurb: 'Steal Bristle’s keycards, then his formula.',
+    map: GLASSHOUSES,
+    art: 'glasshouse',
+    timeLimit: 480,
+    timeoutText: 'Time’s up! The lockdown sealed the glasshouses.',
+    horde: { base: 10, perSurvivor: 7, progressBonus: 0.5, max: 52 },
+    sleepShare: 0.55,
+    doc: { spawn: { x: 70, z: 72 } },
+    stages: [
+      {
+        kind: 'collect',
+        label: 'Find the keycards by the glasshouses',
+        item: 'keycard',
+        spots: [
+          { x: -14, z: 48 },
+          { x: 39, z: -22 },
+          { x: 53, z: -44 },
+        ],
+        doc: 'follow',
+        say: [
+          { who: 'doc', text: 'The formula is in Bristle Bio HQ, across the canal. The door takes three keycards.' },
+          { who: 'bristle', text: 'Visitors are welcome in the gift shop only! The gift shop is closed.' },
+          { who: 'doc', text: 'And the lockdown starts in eight minutes. Let’s not be here for it.' },
+        ],
+      },
+      {
+        kind: 'reach',
+        label: 'Get Doc to the HQ door (north-west)',
+        at: { x: -46, z: -46 },
+        r: 7,
+        doc: 'follow',
+        checkpoint: { x: -14, z: 4 },
+        say: [{ who: 'you', text: 'Three keycards. One very cross professor.' }],
+        done: [{ who: 'doc', text: 'We’re in! MegaSprout, backwards… I just need time.' }],
+      },
+      {
+        kind: 'hold',
+        label: 'Hold the HQ while Doc turns the formula into a cure spray',
+        at: { x: -46, z: -46 },
+        r: 12,
+        time: 110,
+        waveEvery: 6,
+        waveSize: 2,
+        doc: 'wait',
+        docPost: { x: -52, z: -52 },
+        checkpoint: { x: -40, z: -40 },
+        cues: [
+          { at: 0.3, line: { who: 'bristle', text: 'Put down my formula! It took me years to get it this wrong!' } },
+          { at: 0.6, line: { who: 'doc', text: 'Mix, shake, spray… don’t breathe this, it tickles.' } },
+          { at: 0.85, line: { who: 'buddy', text: 'Whatever you’re doing, do it faster!' } },
+        ],
+        done: [{ who: 'doc', text: 'Cure spray! Enough for the whole valley… if only we had something to spray it from.' }],
+      },
+    ],
+    intro: [
+      { title: 'Chapter 9: Glasshouses', text: 'Bristle’s glasshouses: warm, sticky, and full of bamboo that grew right through the roof.' },
+      { text: 'Somewhere in his HQ is the MegaSprout formula. Doc wants to turn it inside out.' },
+    ],
+    outro: [
+      { title: 'Spray it forward', text: 'The cure spray works. The tricky part is spraying a whole valley.' },
+      { text: 'Then Doc spots them: Bristle’s crop-duster blimps, moored over his factory, waiting to spray MegaSprout everywhere.', art: 'factory' },
+    ],
+  },
+
+  // ------------------------------------------------------------------ 10
+  {
+    title: 'Root of the Problem',
+    blurb: 'Fill Bristle’s blimps with cure instead of MegaSprout.',
+    map: BRISTLE_WORKS,
+    art: 'factory',
+    timeLimit: null,
+    wonText: 'The blimps are spraying the cure. You saved the valley!',
+    horde: { base: 11, perSurvivor: 7, progressBonus: 0.5, max: 55 },
+    sleepShare: 0.4,
+    doc: { spawn: { x: -68, z: 72 } },
+    devices: [
+      { kind: 'valve', x: -36, z: -34, face: { x: 0, z: -46 } },
+      { kind: 'valve', x: 44, z: -34, face: { x: 0, z: -46 } },
+      { kind: 'valve', x: 12, z: -62, face: { x: 0, z: -46 } },
+    ],
+    stages: [
+      {
+        kind: 'escort',
+        label: 'Push the cure cart up to the factory wall',
+        path: WORKS.slice(0, 5),
+        waveEvery: 9,
+        waveSize: 2,
+        doc: 'follow',
+        say: [
+          { who: 'doc', text: 'The blimps fill up from the big tank in the factory yard. We bring the cure, they spray it. Simple.' },
+          { who: 'buddy', text: 'Nothing about this has been simple.' },
+        ],
+        cues: [{ at: 0.6, line: { who: 'bristle', text: 'I can see you, you know. I have binoculars.' } }],
+      },
+      {
+        kind: 'escort',
+        label: 'Push the cart through the pass to the tank',
+        path: WORKS.slice(4),
+        waveEvery: 6,
+        waveSize: 3,
+        checkpoint: { x: 10, z: 12 },
+        say: [{ who: 'bristle', text: 'Release the… everyone! Release everyone!' }],
+        cues: [{ at: 0.6, line: { who: 'doc', text: 'Nearly at the tank! Keep them off the wheels!' } }],
+      },
+      {
+        kind: 'activate',
+        label: 'Open the valves between the tank and the blimps',
+        devices: [0, 1, 2],
+        noun: 'Valves',
+        time: 5,
+        waveSize: 3,
+        doc: 'wait',
+        docPost: { x: -4, z: -42 },
+        checkpoint: { x: 10, z: -34 },
+        say: [{ who: 'doc', text: 'Cure’s going in! Now open every valve between this tank and the blimps.' }],
+        after: [
+          { who: 'doc', text: 'One valve open!' },
+          { who: 'buddy', text: 'Two! Where’s the third one?' },
+        ],
+      },
+      {
+        kind: 'hold',
+        label: 'Hold the yard while the blimps fill up',
+        at: { x: 0, z: -46 },
+        r: 13,
+        time: 120,
+        waveEvery: 6,
+        waveSize: 3,
+        checkpoint: { x: 2, z: -40 },
+        say: [{ who: 'doc', text: 'Filling… This is the big one. Everybody hold on!' }],
+        cues: [
+          { at: 0.25, line: { who: 'bristle', text: 'Stop that! Do you know what blimps cost?!' } },
+          { at: 0.5, line: { who: 'doc', text: 'Halfway! The blimps are turning a lovely teal.' } },
+          { at: 0.75, line: { who: 'bristle', text: 'Fine! FINE! I’m leaving. I’m taking my balloon.' } },
+          { at: 0.92, line: { who: 'doc', text: 'Almost full…' } },
+        ],
+        done: [{ who: 'doc', text: 'Cast off! Spray it everywhere!' }],
+      },
+    ],
+    intro: [
+      { title: 'Chapter 10: Root of the Problem', text: 'The Bristle Bio works: chimneys, green smoke, and a fleet of crop-duster blimps.' },
+      { text: 'One cart of cure. One very big tank. One last push.' },
+    ],
+    outro: [
+      { title: 'Green again', text: 'The blimps drift over the valley, spraying the cure on every farm, field and bamboo grove.', art: 'factory' },
+      { text: 'Professor Bristle floats off in a hot-air balloon, shaking his fist. He was last seen heading out to sea.', art: 'balloon' },
+      { text: 'The bamboo grows back green. The normal kind of green. It tastes of nothing but bamboo.' },
       { title: 'The End', text: 'Thanks for playing, {you}!', art: 'end' },
     ],
   },

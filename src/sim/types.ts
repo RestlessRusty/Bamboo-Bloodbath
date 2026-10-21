@@ -137,7 +137,10 @@ export type GameEvent =
   | { e: 'checkpoint' }
   | { e: 'heal'; id: string };
 
-export type StoryItemKind = 'battery' | 'lotus' | 'glowcap';
+export type StoryItemKind = 'battery' | 'lotus' | 'glowcap' | 'sack' | 'keycard';
+
+/** Story machinery on the map: switched on or off by "activate" stages ('gate' opens when its stage is done). */
+export type StoryDeviceKind = 'lever' | 'pump' | 'valve' | 'gate';
 
 /** Why a story chapter was lost. */
 export type StoryFail = 'doc' | 'time' | 'wiped';
@@ -146,12 +149,19 @@ export type StoryFail = 'doc' | 'time' | 'wiped';
 export interface StorySnap {
   /** Index of the current stage (objective) in the chapter. */
   stage: number;
-  /** Items picked up / needed in a "collect" stage. */
+  /** Items picked up / needed in a "collect" stage; spots done / needed in an "activate" stage. */
   got: number;
   need: number;
-  /** "Hold" stages: progress 0..1, and whether someone is inside the zone right now. */
+  /**
+   * Progress 0..1 of a "hold" stage, of the cart's way in an "escort" stage, or of the spot being worked
+   * in an "activate" stage; and whether that's going on right now (someone in the zone / cart rolling / at a spot).
+   */
   hold: number;
   holding: boolean;
+  /** The chapter's machinery: `t` is how far along it is being switched (0..1), `live` while it's an objective. */
+  devices: { kind: StoryDeviceKind; x: number; z: number; yaw: number; t: number; done: boolean; live: boolean }[];
+  /** The cart in escort chapters. `jammed`: zombies on it; `idle`: nobody pushing. */
+  cart: { x: number; z: number; yaw: number; state: 'rolling' | 'idle' | 'jammed'; left: number } | null;
   /** The player is at the target but Doc is lagging behind. */
   waitDoc: boolean;
   items: { id: number; kind: StoryItemKind; x: number; y: number; z: number }[];
@@ -175,6 +185,8 @@ export interface Snapshot {
   timeLeft: number;
   phase: MatchPhase;
   rescued: number;
+  /** Quick play: bots still out once every human is done (someone made it), so the match can be ended early; else 0. */
+  botsOut: number;
   survivors: SurvivorSnap[];
   zombies: ZombieSnap[];
   javelins: JavelinSnap[];

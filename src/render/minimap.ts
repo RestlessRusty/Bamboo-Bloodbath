@@ -61,6 +61,17 @@ export function drawMinimap(canvas: HTMLCanvasElement, map: GameMap | null): voi
     ctx.stroke();
   }
 
+  // Story roads.
+  ctx.strokeStyle = '#a27a52';
+  ctx.lineCap = 'round';
+  for (const road of layout.roads ?? []) {
+    ctx.lineWidth = Math.max(2, (road.width / layout.size) * w);
+    ctx.beginPath();
+    road.points.forEach((p, i) => (i ? ctx.lineTo(px(p.x), pz(p.z)) : ctx.moveTo(px(p.x), pz(p.z))));
+    ctx.stroke();
+  }
+  ctx.lineCap = 'butt';
+
   // Dashed line along the route from the camp to the hut.
   ctx.strokeStyle = 'rgba(43, 30, 26, 0.6)';
   ctx.lineWidth = Math.max(1, w * 0.015);

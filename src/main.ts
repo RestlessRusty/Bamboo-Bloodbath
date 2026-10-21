@@ -23,9 +23,12 @@ import { PANDA_VARIANTS, WEAPON_TYPES, type PlayerSpec, type Snapshot } from './
 import { completeChapter, loadProgress } from './storyProgress';
 import { el, formatTime } from './ui/dom';
 import { HowToPlay } from './ui/HowToPlay';
+import { InstallPrompt, isInstalled } from './ui/InstallPrompt';
 import { Hud, type EndMode } from './ui/Hud';
 import { Lobby } from './ui/Lobby';
 import { Menu } from './ui/Menu';
+import { QuickPlayMenu } from './ui/QuickPlayMenu';
+import { RecordsCard } from './ui/RecordsCard';
 import { SettingsPanel, type SettingKey } from './ui/SettingsPanel';
 import { StoryCards } from './ui/StoryCards';
 import { StoryHud } from './ui/StoryHud';
@@ -74,7 +77,7 @@ let wakeLock: { release(): Promise<void> } | null = null;
 const fallbackName = `Panda${Math.floor(100 + Math.random() * 900)}`;
 const progress = loadProgress(CHAPTERS.length);
 /** The quick-play match being played (solo, host or guest), for the records. */
-let match: { mapId: string; difficulty: Difficulty } | null = null;
+let match: { mapId: string; difficulty: Difficulty; bots: number } | null = null;
 /** Story chapter being played, and where a retry starts (stage and the clock at that point). */
 let run: { chapter: number; checkpoint: number; clock: number | null } | null = null;
 
@@ -90,6 +93,26 @@ input.setFlipTilt(settings.flipTilt);
 
 const settingsPanel = new SettingsPanel(uiEl, settings, onSettingChanged, () => input.calibrateTilt());
 const howToPlay = new HowToPlay(uiEl, settings);
+const records = new RecordsCard(uiEl, settings);
+
+// Top-right on the menus, browser only: Install, and Fullscreen (matches go fullscreen on start anyway).
+const cornerBtns = el('div', 'corner-btns');
+const installPrompt = new InstallPrompt(uiEl);
+const fullscreenBtn = el(
+  'button',
+  'icon-btn',
+  `<svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>`,
+);
+fullscreenBtn.type = 'button';
+fullscreenBtn.title = 'Fullscreen';
+fullscreenBtn.setAttribute('aria-label', 'Fullscreen');
+fullscreenBtn.addEventListener('click', () => {
+  unlockAudio();
+  enterFullscreenLandscape();
+});
+cornerBtns.append(installPrompt.button, fullscreenBtn);
+uiEl.appendChild(cornerBtns);
+document.addEventListener('fullscreenchange', updateCornerButtons);
 
 const hud = new Hud(uiEl, {
   onPause: () => setPaused(true),
@@ -106,6 +129,7 @@ const hud = new Hud(uiEl, {
     if (run) void startChapter(run.chapter, run.checkpoint, run.clock);
   },
   onChapters: () => openStory(run?.chapter),
+  onEndMatch: () => session?.requestEnd(),
 });
 
 const menu = new Menu(uiEl, settings, {
@@ -113,7 +137,12 @@ const menu = new Menu(uiEl, settings, {
     unlockAudio();
     openStory();
   },
-  onPlaySolo: () => void startSolo(),
+  onQuickPlay: () => {
+    unlockAudio();
+    menu.hide();
+    quickPlay.show();
+    showMenuMap();
+  },
   onMultiplayer: () => {
     unlockAudio();
     menu.hide();
@@ -122,7 +151,18 @@ const menu = new Menu(uiEl, settings, {
   onSettings: () => settingsPanel.open(),
   onHowTo: () => howToPlay.open(),
   onPreview: () => renderer.setShowcase(settings.variant, settings.weapon),
+  onChange: () => saveSettings(settings),
+});
+
+const quickPlay = new QuickPlayMenu(uiEl, settings, {
+  onPlay: () => void startSolo(),
+  onRecords: () => records.open(),
   onMapPreview: () => showMenuMap(),
+  onBack: () => {
+    quickPlay.hide();
+    showMenuMap();
+    menu.show();
+  },
   onChange: () => saveSettings(settings),
 });
 
@@ -162,6 +202,7 @@ const cards = new StoryCards(uiEl);
 const ctx: GameContext = { renderer, input, hud, sfx, settings, story: storyHud };
 
 renderer.setShowcase(settings.variant, settings.weapon);
+updateCornerButtons();
 
 // ------------------------------------------------------------------ helpers
 
@@ -226,6 +267,16 @@ function enterFullscreenLandscape(): void {
 }
 
 /**
+ * Install / Fullscreen show on menus only. Fullscreen: touch devices whose browser can do it
+ * (not iPhone Safari), and not when installed or already fullscreen.
+ */
+function updateCornerButtons(): void {
+  installPrompt.setOnMenu(!session);
+  const can = window.matchMedia('(pointer: coarse)').matches && !!document.documentElement.requestFullscreen;
+  fullscreenBtn.hidden = !can || isInstalled() || !!document.fullscreenElement || !!session;
+}
+
+/**
  * Must run inside a tap. iOS forgets motion-sensor permission on reload, so a saved "tilt"
  * choice asks again here; without sensors we fall back to the joystick rather than a stuck panda.
  */
@@ -260,6 +311,8 @@ function clearSession(): void {
   session?.dispose();
   session = null;
   storyHud.reset();
+  sfx.setScene('menu');
+  updateCornerButtons();
 }
 
 /** `intro`: what to flash at the start instead of the map name and tip (story chapters). */
@@ -270,10 +323,13 @@ function enterGame(mapRef: MapRef, create: () => Session, intro?: string): void 
   renderer.setMap(map);
   hud.setRoute(map.route);
   menu.hide();
+  quickPlay.hide();
   lobby.hide();
   storyMenu.hide();
   hud.show();
   session = create();
+  updateCornerButtons();
+  sfx.setScene('match');
   input.setEnabled(true);
   void requestWakeLock();
   if (intro) {
@@ -303,7 +359,7 @@ async function startSolo(): Promise<void> {
   ];
   const mapRef = resolvePick(settings.map);
   const difficulty = settings.difficulty;
-  match = { mapId: mapRef.id, difficulty };
+  match = { mapId: mapRef.id, difficulty, bots: settings.bots };
   enterGame(mapRef, () => new LocalGame(ctx, specs, localId, onGameEnd, null, { difficulty }));
 }
 
@@ -326,11 +382,12 @@ function onGameEnd(snap: Snapshot): void {
   hud.showEnd(won, text, mode);
 
   if (!match) return;
-  const res = addResult(match.mapId, match.difficulty, won, time, me?.kills ?? 0);
+  const res = addResult(match.mapId, match.difficulty, match.bots, won, time, me?.kills ?? 0);
   const r = res.record;
   const news = [res.newBestTime && 'New best time!', res.newMostKills && 'New kill record!'].filter(Boolean).join(' ');
   const best = r.bestTime !== null ? `best ${formatTime(r.bestTime)} · ` : '';
-  hud.showRecords(`${news ? `${news} ` : ''}${DIFFICULTY[match.difficulty].label}: ${best}won ${r.wins}/${r.plays} · most kills ${r.mostKills}`, !!news);
+  const setup = `${DIFFICULTY[match.difficulty].label}, ${match.bots} bot${match.bots === 1 ? '' : 's'}`;
+  hud.showRecords(`${news ? `${news} ` : ''}${setup}: ${best}won ${r.wins}/${r.plays} · most kills ${r.mostKills}`, !!news);
   match = null;
 }
 
@@ -399,8 +456,8 @@ function onStoryEnd(snap: Snapshot): void {
 
   if (won) {
     completeChapter(progress, r.chapter);
-    const last = r.chapter === CHAPTERS.length - 1;
-    hud.showEnd(true, (last ? 'The cure is brewing. You did it!' : `${CHAPTERS[r.chapter].title}: done!`) + kills, 'story', 'Chapter complete!');
+    const ch = CHAPTERS[r.chapter];
+    hud.showEnd(true, (ch.wonText ?? `${ch.title}: done!`) + kills, 'story', 'Chapter complete!');
     return;
   }
 
@@ -413,7 +470,7 @@ function onStoryEnd(snap: Snapshot): void {
     st?.fail === 'doc'
       ? 'Doc turned into a zombie. No Doc, no cure…'
       : st?.fail === 'time'
-        ? 'Time’s up! The storm caught you.'
+        ? (CHAPTERS[r.chapter].timeoutText ?? 'Time’s up!')
         : 'The zombies got you…';
   hud.showEnd(false, reason + kills, 'story', 'Game over', r.checkpoint > 0);
 }
@@ -463,6 +520,7 @@ function leaveToMenu(message = ''): void {
   input.setEnabled(false);
   hud.hide();
   lobby.hide();
+  quickPlay.hide();
   releaseWakeLock();
   showMenuMap();
   menu.show(message);
@@ -496,6 +554,9 @@ async function createRoom(): Promise<void> {
     host = h;
     h.onChange = () => {
       if (!session) showRoom();
+    };
+    h.onEndRequest = () => {
+      if (session instanceof LocalGame) session.requestEnd();
     };
     h.onPlayerLeft = (id) => {
       if (session instanceof LocalGame) session.convertToBot(id);
@@ -535,7 +596,7 @@ async function joinRoom(code: string): Promise<void> {
       localId = c.myId;
       // Same protocol version means the same maps, so this fallback should never be needed.
       const ref = isMapRef(mapRef) ? mapRef : refOf(DEFAULT_MAP);
-      match = { mapId: ref.id, difficulty };
+      match = { mapId: ref.id, difficulty, bots: specs.filter((s) => s.bot).length };
       enterGame(ref, () => new RemoteGame(ctx, specs, c.myId, onGameEnd, c));
     };
     c.onSnapshot = (snap) => {
@@ -562,7 +623,7 @@ async function hostStart(): Promise<void> {
   const mapRef = resolvePick(h.mapPick);
   const difficulty = h.difficulty;
   h.start(specs, mapRef);
-  match = { mapId: mapRef.id, difficulty };
+  match = { mapId: mapRef.id, difficulty, bots: h.bots };
   enterGame(mapRef, () => new LocalGame(ctx, specs, localId, onGameEnd, h, { difficulty }));
 }
 

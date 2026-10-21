@@ -49,6 +49,9 @@ export interface SimOptions {
 /** Height of the capsule centre above the feet (same for pandas and zombies). */
 const CENTER_HEIGHT = SURVIVOR.halfHeight + SURVIVOR.radius;
 
+/** The story cart's solid box (it rolls along +Z of its own frame). */
+const CART_SIZE = { halfWidth: 0.85, halfHeight: 0.7, halfLength: 1.4 };
+
 /** Spawn offsets around the start point as [towards the goal, sideways]. */
 const SPAWN_OFFSETS: readonly [number, number][] = [
   [0, 0],
@@ -92,6 +95,9 @@ export class Simulation implements BotWorld, MissionHost {
   private timeLeft: number;
   private phase: MatchPhase = 'playing';
   private rescued = 0;
+  /** Bots still out once every human is done (see endEarly), and the clock when that first happened. */
+  private botsOut = 0;
+  private doneClock: number | null = null;
   private nextZombieId = 1;
   private nextJavelinId = 1;
   private nextCrackerId = 1;
@@ -104,6 +110,9 @@ export class Simulation implements BotWorld, MissionHost {
   private readonly goalRescue: boolean;
   private readonly mission: Mission | null;
   private readonly spawnAt: { x: number; z: number; toward: { x: number; z: number } };
+  /** Story cart (escort chapters): a body that pushes everyone aside, and its footprint for steering. */
+  private cartBody: RigidBody | null = null;
+  private cart: Circle | null = null;
 
   constructor(
     readonly map: GameMap,
@@ -183,6 +192,20 @@ export class Simulation implements BotWorld, MissionHost {
     this.updateSpawning();
     this.cleanupZombies();
     this.checkEnd();
+    this.botsOut = this.countBotsOut();
+    if (this.botsOut > 0 && this.doneClock === null) this.doneClock = this.timeLeft;
+  }
+
+  /**
+   * Quick play, once every human is done and someone made it: stop waiting for the bots.
+   * A win, timed from when the last human finished. False if that isn't the situation (any more).
+   */
+  endEarly(): boolean {
+    if (this.phase !== 'playing' || this.botsOut === 0) return false;
+    if (this.doneClock !== null) this.timeLeft = this.doneClock;
+    this.botsOut = 0;
+    this.phase = 'won';
+    return true;
   }
 
   /** Current state plus all events since the previous call. */
@@ -194,6 +217,7 @@ export class Simulation implements BotWorld, MissionHost {
       timeLeft: this.clock,
       phase: this.phase,
       rescued: this.rescued,
+      botsOut: this.botsOut,
       survivors: this.survivors.map((s) => ({
         id: s.spec.id,
         x: s.x,
@@ -263,6 +287,37 @@ export class Simulation implements BotWorld, MissionHost {
     return true;
   }
 
+  /** Something solid and round at (x, z), placed after the map was built (story machinery). */
+  addBlock(x: number, z: number, r: number): void {
+    const y = this.map.terrain.heightAt(x, z);
+    this.world.createCollider(RAPIER.ColliderDesc.cylinder(1.5, r).setTranslation(x, y + 1, z));
+    this.obstacles.add({ x, z, r });
+  }
+
+  /** Puts the story cart at (x, z) facing `yaw` (0 = +Z); moves it there smoothly after the first call. */
+  placeCart(x: number, z: number, yaw: number): void {
+    const y = this.map.terrain.heightAt(x, z) + CART_SIZE.halfHeight + 0.05;
+    const rot = { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
+    if (!this.cartBody) {
+      this.cartBody = this.world.createRigidBody(
+        RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(x, y, z).setRotation(rot),
+      );
+      this.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(CART_SIZE.halfWidth, CART_SIZE.halfHeight, CART_SIZE.halfLength).setFriction(0),
+        this.cartBody,
+      );
+    } else {
+      this.cartBody.setNextKinematicTranslation({ x, y, z });
+      this.cartBody.setNextKinematicRotation(rot);
+    }
+    this.cart = { x, z, r: CART_SIZE.halfLength };
+  }
+
+  /** Where bot buddies should stay right now (story: beside the cart), or null to just follow the leader. */
+  guard(): { x: number; z: number; dx: number; dz: number } | null {
+    return this.mission?.guard() ?? null;
+  }
+
   /** Hand a player's panda to (or back from) the bot AI, e.g. when someone disconnects. */
   setBot(id: string, bot: boolean): void {
     const s = this.survivors.find((x) => x.spec.id === id);
@@ -279,7 +334,10 @@ export class Simulation implements BotWorld, MissionHost {
   steer(x: number, z: number, dx: number, dz: number, avoidWater: boolean): { x: number; z: number } {
     let sx = dx;
     let sz = dz;
-    for (const o of this.obstacles.near(x, z, 2.4, this.scratch)) {
+    const near = this.obstacles.near(x, z, 2.4, this.scratch);
+    const cart = this.cart;
+    if (cart && Math.hypot(cart.x - x, cart.z - z) < 2.4 + cart.r) near.push(cart);
+    for (const o of near) {
       const ox = o.x - x;
       const oz = o.z - z;
       const od = Math.hypot(ox, oz) || 0.001;
@@ -411,8 +469,12 @@ export class Simulation implements BotWorld, MissionHost {
     for (const t of props.trees) {
       if (t.collide) world.createCollider(RAPIER.ColliderDesc.cylinder(2, t.radius).setTranslation(t.x, t.y + 1.5, t.z));
     }
+    // Boulders: as tall as they look (plus a bit underground for slopes), so nothing invisible sticks out.
     for (const r of props.rocks) {
-      world.createCollider(RAPIER.ColliderDesc.cylinder(1.2, r.radius).setTranslation(r.x, r.y, r.z));
+      const below = 0.6;
+      world.createCollider(
+        RAPIER.ColliderDesc.cylinder((r.height + below) / 2, r.radius).setTranslation(r.x, r.y + (r.height - below) / 2, r.z),
+      );
     }
     for (const l of layout.landmarks ?? []) {
       world.createCollider(RAPIER.ColliderDesc.cylinder(4, l.r).setTranslation(l.x, this.map.terrain.heightAt(l.x, l.z) + 2, l.z));
@@ -1129,6 +1191,7 @@ export class Simulation implements BotWorld, MissionHost {
     if (terrain.isWater(x, z) || terrain.ridgeAmount(x, z) > 0.15) return false;
     if (dist2d({ x, z }, layout.start) < layout.start.r + 8) return false;
     if (dist2d({ x, z }, layout.goal) < layout.goal.r + 2) return false;
+    if (this.cart && dist2d({ x, z }, this.cart) < this.cart.r + 1) return false;
     if (this.survivors.some((s) => s.state !== 'dead' && s.state !== 'rescued' && dist2d(s, { x, z }) < ZOMBIE.safeRadius)) return false;
     return this.obstacles.near(x, z, 0.8, this.scratch).length === 0;
   }
@@ -1451,5 +1514,23 @@ export class Simulation implements BotWorld, MissionHost {
     }
     const stillPlaying = this.survivors.some((s) => s.state === 'active' || s.state === 'downed');
     if (!stillPlaying || this.timeLeft <= 0) this.phase = this.rescued > 0 ? 'won' : 'lost';
+  }
+
+  /** Bots still playing when no human is (a guest who left counts as a bot) and at least one human made it; else 0. */
+  private countBotsOut(): number {
+    if (this.mission || this.phase !== 'playing') return 0;
+    let bots = 0;
+    let humanSaved = false;
+    for (const s of this.survivors) {
+      const playing = s.state === 'active' || s.state === 'downed';
+      if (s.spec.bot) {
+        if (playing) bots++;
+      } else if (playing) {
+        return 0;
+      } else if (s.state === 'rescued') {
+        humanSaved = true;
+      }
+    }
+    return humanSaved ? bots : 0;
   }
 }

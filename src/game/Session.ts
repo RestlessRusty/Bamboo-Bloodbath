@@ -9,6 +9,8 @@ export interface Session {
   /** Multiplayer can't be paused: the game keeps running for everyone. */
   readonly canPause: boolean;
   paused: boolean;
+  /** "End match" once every human is done and only bots are still out (the host decides in multiplayer). */
+  requestEnd(): void;
 }
 
 /** The map of a match is whatever the renderer currently shows (see Renderer.setMap). */

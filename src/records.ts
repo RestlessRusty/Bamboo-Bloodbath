@@ -1,6 +1,9 @@
-import type { Difficulty } from './config';
+import { MAX_PLAYERS, type Difficulty } from './config';
 
-/** Personal records on this device for one map at one difficulty (quick play: solo and multiplayer). */
+/** Bot buddy counts records are kept for: 0 to 3. */
+export const BOT_COUNTS: readonly number[] = Array.from({ length: MAX_PLAYERS }, (_, i) => i);
+
+/** Personal records on this device for one map, difficulty and bot count (quick play: solo and multiplayer). */
 export interface MapRecord {
   plays: number;
   /** Matches where at least one panda reached the rescue hut. */
@@ -17,11 +20,13 @@ export interface RecordResult {
   newMostKills: boolean;
 }
 
-const KEY = 'bamboo-bloodbath/records/v1';
+// v1 had no bot count; those records can't be sorted into the new table, so they're left behind.
+const KEY = 'bamboo-bloodbath/records/v2';
 
 let cache: Record<string, MapRecord> | null = null;
 
-const keyOf = (mapId: string, difficulty: Difficulty) => `${mapId}/${difficulty}`;
+const clampBots = (bots: number) => Math.max(0, Math.min(BOT_COUNTS.length - 1, Math.round(bots) || 0));
+const keyOf = (mapId: string, difficulty: Difficulty, bots: number) => `${mapId}/${difficulty}/${clampBots(bots)}`;
 const count = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
 
 function load(): Record<string, MapRecord> {
@@ -47,14 +52,14 @@ function load(): Record<string, MapRecord> {
   return cache;
 }
 
-export function getRecord(mapId: string, difficulty: Difficulty): MapRecord {
-  return { ...(load()[keyOf(mapId, difficulty)] ?? { plays: 0, wins: 0, bestTime: null, mostKills: 0 }) };
+export function getRecord(mapId: string, difficulty: Difficulty, bots: number): MapRecord {
+  return { ...(load()[keyOf(mapId, difficulty, bots)] ?? { plays: 0, wins: 0, bestTime: null, mostKills: 0 }) };
 }
 
-/** Adds a finished match. `time`: seconds the match took. */
-export function addResult(mapId: string, difficulty: Difficulty, won: boolean, time: number, kills: number): RecordResult {
+/** Adds a finished match. `time`: seconds the match took; `bots`: bot buddies in it. */
+export function addResult(mapId: string, difficulty: Difficulty, bots: number, won: boolean, time: number, kills: number): RecordResult {
   const all = load();
-  const r = getRecord(mapId, difficulty);
+  const r = getRecord(mapId, difficulty, bots);
   // A new record only counts as "new" when it beats an earlier one, not on the very first match.
   const newBestTime = won && r.bestTime !== null && time < r.bestTime;
   const newMostKills = r.plays > 0 && kills > r.mostKills;
@@ -64,7 +69,7 @@ export function addResult(mapId: string, difficulty: Difficulty, won: boolean, t
     r.bestTime = r.bestTime === null ? time : Math.min(r.bestTime, time);
   }
   r.mostKills = Math.max(r.mostKills, kills);
-  all[keyOf(mapId, difficulty)] = r;
+  all[keyOf(mapId, difficulty, bots)] = r;
   try {
     localStorage.setItem(KEY, JSON.stringify(all));
   } catch {

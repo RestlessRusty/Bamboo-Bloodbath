@@ -1,5 +1,5 @@
 import type { ControlScheme, Settings } from '../settings';
-import { el } from './dom';
+import { el, scrollHint } from './dom';
 
 type Device = 'touch' | 'keys' | 'pad';
 /** [action, how] rows; `how` may contain <kbd> markup. */
@@ -74,26 +74,31 @@ export class HowToPlay {
       'modal',
       `<div class="card howto">
         <h2>How to play</h2>
-        <p class="howto-goal">Reach the <b>rescue hut</b> before time runs out: the arrow shows the way. Story chapters set their own goals.</p>
-        <div class="howto-cols">
-          <section>
-            <div class="seg" data-ref="devices">
-              <button data-v="touch">Touch</button>
-              <button data-v="keys">Keyboard</button>
-              <button data-v="pad">Gamepad</button>
-            </div>
-            <dl class="howto-list" data-ref="controls"></dl>
-            <p class="hint small" data-ref="note"></p>
-          </section>
-          <section>
-            <dl class="howto-list">${rowsHtml(RULES)}</dl>
-          </section>
+        <div class="scroll-body" data-ref="body">
+          <p class="howto-goal">Reach the <b>rescue hut</b> before time runs out: the arrow shows the way. Story chapters set their own goals.</p>
+          <div class="howto-cols">
+            <section>
+              <div class="seg" data-ref="devices">
+                <button data-v="touch">Touch</button>
+                <button data-v="keys">Keyboard</button>
+                <button data-v="pad">Gamepad</button>
+              </div>
+              <dl class="howto-list" data-ref="controls"></dl>
+              <p class="hint small" data-ref="note"></p>
+            </section>
+            <section>
+              <dl class="howto-list">${rowsHtml(RULES)}</dl>
+            </section>
+          </div>
         </div>
-        <button class="btn primary" data-act="close">Got it!</button>
+        <div class="card-foot">
+          <button class="btn primary" data-act="close">Got it!</button>
+        </div>
       </div>`,
     );
     this.el.hidden = true;
     parent.appendChild(this.el);
+    scrollHint(this.ref('body'));
 
     this.el.addEventListener('click', (e) => {
       const t = (e.target as HTMLElement).closest<HTMLElement>('[data-v],[data-act]');

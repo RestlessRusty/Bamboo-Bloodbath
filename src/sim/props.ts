@@ -1,7 +1,8 @@
+import { SURVIVOR } from '../config';
 import { Rng } from '../core/rng';
 import type { Circle, MapLayout } from './mapLayout';
 import type { Route } from './route';
-import type { Terrain } from './terrain';
+import { roadDistance, type Terrain } from './terrain';
 import type { WeaponType } from './types';
 
 export interface TreeProp {
@@ -22,9 +23,13 @@ export interface RockProp {
   x: number;
   y: number;
   z: number;
+  /** Radius of the boulder as seen from above (its widest part). */
   scale: number;
+  /** How far it sticks out of the ground. */
+  height: number;
   rot: number;
   tint: number;
+  /** Collider radius (0 for decoration), a little inside the visible edge. */
   radius: number;
 }
 
@@ -60,7 +65,10 @@ export interface RackProp extends SpotProp {
 
 export interface MapProps {
   trees: TreeProp[];
+  /** Solid boulders. */
   rocks: RockProp[];
+  /** Boulders nobody can bump into: pebbles round the solid ones and scree up the ridge flanks. */
+  stones: RockProp[];
   stalks: StalkProp[];
   grass: DecorProp[];
   flowers: DecorProp[];
@@ -77,6 +85,12 @@ const RACK_WEAPONS: readonly WeaponType[] = ['axe', 'javelin', 'knife', 'axe', '
 const PASSAGE_APPROACH = 6;
 /** Room beside a walkway: the biggest rock (radius ~1.2) plus a panda still can't narrow it. */
 const PASSAGE_PAD = 2.5;
+/** Solid boulders are at least knee-high on a panda, so it's obvious why they stop you. */
+const ROCK_MIN_HEIGHT = 0.55;
+/** Collider radius as a share of a boulder's visible radius: you touch the stone, then it stops you. */
+const ROCK_HIT = 0.9;
+/** Scree up a ridge flank stays inside the ridge wall, plus this (a panda's radius, the closest anyone gets). */
+const WALL_STANDOFF = SURVIVOR.radius;
 
 const dist = (x: number, z: number, c: { x: number; z: number }) => Math.hypot(x - c.x, z - c.z);
 
@@ -96,6 +110,11 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
   const landmarks = layout.landmarks ?? [];
   const solids: Circle[] = [];
   const nearLandmark = (x: number, z: number, gap: number) => landmarks.some((l) => dist(x, z, l) < l.r + gap);
+  // Story roads (carts roll there) and objective spots, placed by hand.
+  const roads = layout.roads ?? [];
+  const clearSpots = layout.clear ?? [];
+  const onStoryWay = (x: number, z: number, gap: number) =>
+    roads.some((r) => roadDistance(r.points, x, z) < r.width / 2 + gap) || clearSpots.some((c) => dist(x, z, c) < c.r + gap);
 
   const nearPond = (x: number, z: number, gap: number) => ponds.some((p) => dist(x, z, p) < p.r + gap);
   const nearHilltop = (x: number, z: number, gap: number) => hills.some((h) => dist(x, z, h) < gap);
@@ -116,17 +135,19 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
       if (inPassage(l.x, l.z, l.r)) console.warn(`[map ${layout.id}] landmark at (${l.x}, ${l.z}) blocks a bridge, ford or pass`);
     }
   }
-  const keepClear = (x: number, z: number) =>
+  // Everything that must stay free of props, except the ridges themselves (boulders sit at their foot).
+  const nearFeature = (x: number, z: number) =>
     dist(x, z, start) < start.r + 4 ||
     dist(x, z, goal) < goal.r + 4 ||
     nearPond(x, z, 2.5) ||
     terrain.nearRiver(x, z, 2.5) ||
     nearCrossing(x, z, 5) ||
     inPassage(x, z, PASSAGE_PAD) ||
-    terrain.ridgeAmount(x, z) > 0.02 ||
     nearHilltop(x, z, 6) ||
     nearLandmark(x, z, 5) ||
+    onStoryWay(x, z, 2.5) ||
     thickets.some((t) => dist(x, z, t) < t.r + 1.5);
+  const keepClear = (x: number, z: number) => terrain.ridgeAmount(x, z) > 0.02 || nearFeature(x, z);
   const spaced = (x: number, z: number, gap: number) => solids.every((s) => dist(x, z, s) >= s.r + gap);
   const randomPoint = (margin: number) => ({
     x: rng.range(-half + margin, half - margin),
@@ -141,6 +162,7 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
     !inPassage(x, z, 0.5) &&
     terrain.ridgeAmount(x, z) < 0.02 &&
     !nearLandmark(x, z, 2) &&
+    !onStoryWay(x, z, 0.5) &&
     !terrain.isWet(x, z);
 
   // Weapon racks spread along the route, alternating sides of it.
@@ -196,14 +218,89 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
     solids.push({ x, z, r: radius });
   }
 
+  // Heights, partner boulders, pebbles and scree draw from their own stream, so they don't shift the rest of the map.
+  const rockRng = new Rng(layout.seed ^ 0x2b0c);
+  const boulder = (x: number, z: number, scale: number, rot: number, tint: number, solid: boolean): RockProp => ({
+    x,
+    y: terrain.heightAt(x, z),
+    z,
+    scale,
+    height: Math.max(solid ? ROCK_MIN_HEIGHT : 0, scale * rockRng.range(0.7, 1.05)),
+    rot,
+    tint,
+    radius: solid ? scale * ROCK_HIT : 0,
+  });
+
   const rocks: RockProp[] = [];
-  for (let i = 0; i < density.rocks * 45 && rocks.length < density.rocks; i++) {
+  const mains: RockProp[] = [];
+  for (let i = 0; i < density.rocks * 45 && mains.length < density.rocks; i++) {
     const { x, z } = randomPoint(3);
     if (keepClear(x, z) || !spaced(x, z, 3)) continue;
-    const scale = rng.range(0.5, 1.4);
-    const radius = 0.85 * scale;
-    rocks.push({ x, y: terrain.heightAt(x, z), z, scale, rot: rng.range(0, Math.PI * 2), tint: rng.next(), radius });
-    solids.push({ x, z, r: radius });
+    const rock = boulder(x, z, rng.range(0.55, 1.3), rng.range(0, Math.PI * 2), rng.next(), true);
+    mains.push(rock);
+    solids.push({ x, z, r: rock.radius });
+  }
+
+  // Some big boulders get a smaller one leaning on them (solid too), and most get pebbles round the base.
+  const stones: RockProp[] = [];
+  for (const main of mains) {
+    rocks.push(main);
+    if (main.scale > 0.85 && rockRng.next() < 0.55) {
+      const a = rockRng.range(0, Math.PI * 2);
+      const scale = main.scale * rockRng.range(0.45, 0.65);
+      const d = (main.scale + scale) * 0.72;
+      const x = main.x + Math.cos(a) * d;
+      const z = main.z + Math.sin(a) * d;
+      const room = solids.every((s) => (s.x === main.x && s.z === main.z) || dist(x, z, s) >= s.r + scale + 1.6);
+      const partner = boulder(x, z, scale, rockRng.range(0, Math.PI * 2), rockRng.next(), true);
+      if (room && !keepClear(x, z)) {
+        rocks.push(partner);
+        solids.push({ x, z, r: partner.radius });
+      }
+    }
+    const pebbles = Math.floor(rockRng.range(0, 4));
+    for (let k = 0; k < pebbles; k++) {
+      const a = rockRng.range(0, Math.PI * 2);
+      const d = main.scale + rockRng.range(0.15, 0.9);
+      const x = main.x + Math.cos(a) * d;
+      const z = main.z + Math.sin(a) * d;
+      const pebble = boulder(x, z, rockRng.range(0.12, 0.28), rockRng.range(0, Math.PI * 2), rockRng.next(), false);
+      if (pebble.y > terrain.waterLevel + 0.05) stones.push(pebble);
+    }
+  }
+
+  // Ridges: loose boulders along the crest (out of reach, so no colliders) and solid ones half buried at
+  // the foot of the flanks, so the walls look like rock that's been falling down for ages. The flanks
+  // in between are too steep for anything to sit on.
+  const slope = (x: number, z: number) => {
+    const e = 0.6;
+    return Math.hypot(terrain.heightAt(x + e, z) - terrain.heightAt(x - e, z), terrain.heightAt(x, z + e) - terrain.heightAt(x, z - e)) / (2 * e);
+  };
+  const screeEdge = layout.renderSize / 2 - 2;
+  for (const ridge of terrain.ridges) {
+    for (let s = 0; s < ridge.length; s += 4.5) {
+      const p = ridge.at(ridge.fractionOf(s));
+      for (const side of [-1, 1]) {
+        const roll = rockRng.next();
+        const scale = rockRng.range(0.5, 1.2);
+        const foot = roll < 0.3;
+        const d = foot ? ridge.wallHalf + WALL_STANDOFF + rockRng.range(-0.2, 0.5) : rockRng.range(0, ridge.crest * 0.9);
+        const x = p.x - p.tz * side * d;
+        const z = p.z + p.tx * side * d;
+        const rock = boulder(x, z, scale, rockRng.range(0, Math.PI * 2), rockRng.next(), foot);
+        if (roll > 0.6) continue;
+        if (foot) {
+          if (Math.max(Math.abs(x), Math.abs(z)) > half - 2 || nearFeature(x, z)) continue;
+          if (!solids.every((c) => dist(x, z, c) >= c.r + scale + 1.6)) continue;
+          rocks.push(rock);
+          solids.push({ x, z, r: rock.radius });
+        } else {
+          if (Math.max(Math.abs(x), Math.abs(z)) > screeEdge || !terrain.isWall(x, z)) continue;
+          if (inPassage(x, z, scale + 4) || slope(x, z) > 0.9) continue;
+          stones.push(rock);
+        }
+      }
+    }
   }
 
   // Decorative forest ring outside the walls.
@@ -294,5 +391,5 @@ export function generateProps(layout: MapLayout, terrain: Terrain, route: Route)
     }
   }
 
-  return { trees, rocks, stalks, grass, flowers, lilies, bambooSpots, racks };
+  return { trees, rocks, stones, stalks, grass, flowers, lilies, bambooSpots, racks };
 }

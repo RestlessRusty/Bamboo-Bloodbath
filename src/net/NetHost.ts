@@ -40,6 +40,8 @@ export class NetHost {
   onChange: (() => void) | null = null;
   /** A guest disconnected during a match. */
   onPlayerLeft: ((id: string) => void) | null = null;
+  /** A guest pressed "End match". */
+  onEndRequest: (() => void) | null = null;
 
   private readonly remotes: Remote[] = [];
   private readonly inputs = new Map<string, PlayerInput>();
@@ -168,6 +170,8 @@ export class NetHost {
       if (prev?.cracker) input.cracker = true;
       this.inputs.set(r.id, input);
       this.inputAt.set(r.id, performance.now());
+    } else if (msg.t === 'end' && r.id && this.inGame) {
+      this.onEndRequest?.();
     }
   }
 

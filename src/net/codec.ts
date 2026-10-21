@@ -21,6 +21,8 @@ export interface EncodedSnapshot {
   tl: number;
   ph: number;
   r: number;
+  /** Bots still out when the match can be ended early. */
+  bo: number;
   s: (string | number)[][];
   z: (string | number)[][];
   j: number[][];
@@ -50,6 +52,7 @@ export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
     tl: r2(s.timeLeft),
     ph: PHASES.indexOf(s.phase),
     r: s.rescued,
+    bo: s.botsOut,
     s: s.survivors.map((v) => [
       v.id,
       r3(v.x),
@@ -143,6 +146,7 @@ export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
     timeLeft: n(e.tl),
     phase: PHASES[n(e.ph)] ?? 'playing',
     rescued: n(e.r),
+    botsOut: n(e.bo),
     survivors,
     zombies,
     javelins,

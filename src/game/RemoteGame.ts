@@ -9,6 +9,7 @@ const MAX_BUFFER = 40;
 /** Network hooks for a guest. */
 export interface ClientLink {
   sendInput(input: PlayerInput): void;
+  requestEnd(): void;
 }
 
 /**
@@ -39,6 +40,11 @@ export class RemoteGame implements Session {
 
   get isOver(): boolean {
     return this.ended;
+  }
+
+  /** The host checks it and ends the match for everyone. */
+  requestEnd(): void {
+    if (!this.ended) this.link.requestEnd();
   }
 
   receive(snap: Snapshot): void {

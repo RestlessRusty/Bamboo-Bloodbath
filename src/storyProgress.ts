@@ -11,12 +11,15 @@ export function loadProgress(count: number): StoryProgress {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? 'null') as Partial<StoryProgress> | null;
     if (raw && typeof raw === 'object') {
-      const unlocked = typeof raw.unlocked === 'number' && Number.isFinite(raw.unlocked) ? Math.round(raw.unlocked) : 1;
-      const done = Array.isArray(raw.done) ? raw.done : [];
-      return {
-        unlocked: Math.max(1, Math.min(count, unlocked)),
-        done: Array.from({ length: count }, (_, i) => done[i] === true),
-      };
+      let unlocked = typeof raw.unlocked === 'number' && Number.isFinite(raw.unlocked) ? Math.round(raw.unlocked) : 1;
+      const list = Array.isArray(raw.done) ? raw.done : [];
+      const done = Array.from({ length: count }, (_, i) => list[i] === true);
+      // Saved before more chapters were added: the old last chapter capped `unlocked`, so finishing it
+      // still opens the next one.
+      done.forEach((d, i) => {
+        if (d) unlocked = Math.max(unlocked, i + 2);
+      });
+      return { unlocked: Math.max(1, Math.min(count, unlocked)), done };
     }
   } catch {
     // Storage blocked or corrupt: start from chapter 1.

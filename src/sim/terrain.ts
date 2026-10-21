@@ -63,6 +63,12 @@ export class Terrain {
       if (dh < hill.r) h += hill.h * 0.5 * (1 + Math.cos((Math.PI * dh) / hill.r));
     }
 
+    // Roads: flat, so carts roll straight. Before the ridges, which still rise beside a road through a pass.
+    for (const road of this.layout.roads ?? []) {
+      const hw = road.width / 2;
+      h = lerp(FLAT_LEVEL, h, smoothstep(hw + 1, hw + 6, roadDistance(road.points, x, z)));
+    }
+
     // Ridges: steep walls with a rough crest, cut open at the passes.
     for (const ridge of this.ridges) {
       const amount = ridgeProfile(ridge, x, z);
@@ -190,6 +196,21 @@ export class Terrain {
   peak(): number {
     return this.layout.hills.reduce((m, h) => Math.max(m, h.h), 0);
   }
+}
+
+/** Distance from (x, z) to the nearest point of a polyline. */
+export function roadDistance(points: readonly { x: number; z: number }[], x: number, z: number): number {
+  let best = Infinity;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const abx = b.x - a.x;
+    const abz = b.z - a.z;
+    const len2 = abx * abx + abz * abz || 1e-9;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * abx + (z - a.z) * abz) / len2));
+    best = Math.min(best, Math.hypot(a.x + abx * t - x, a.z + abz * t - z));
+  }
+  return best;
 }
 
 /** 1 on the crest, falling to 0 at the foot, and 0 inside passes. */

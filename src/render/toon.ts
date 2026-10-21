@@ -61,6 +61,11 @@ export function toonInstanced(): THREE.MeshToonMaterial {
 const OUTLINE = new THREE.MeshBasicMaterial({ color: 0x2b1e1a, side: THREE.BackSide });
 shared.add(OUTLINE);
 
+/** The shared ink material, for outline hulls built by hand (e.g. instanced ones). */
+export function outlineMaterial(): THREE.MeshBasicMaterial {
+  return OUTLINE;
+}
+
 /** Inverted-hull outline: a slightly bigger back-face copy drawn in dark ink. */
 export function addOutline(mesh: THREE.Mesh, scale = 1.07): THREE.Mesh {
   const o = new THREE.Mesh(mesh.geometry, OUTLINE);

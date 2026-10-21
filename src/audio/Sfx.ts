@@ -1,3 +1,4 @@
+import { LOBBY_TRACK_URL, LobbyTrack } from './LobbyTrack';
 import { Music } from './Music';
 
 export type SfxName =
@@ -29,16 +30,18 @@ export type SfxName =
 /** How far away (metres) a sound can still be heard. */
 const HEARING = 38;
 
-/** All sounds are synthesised with WebAudio, so there are no audio files to load. */
+/** Sound effects are synthesised with WebAudio; the only audio file is the menu music (see LobbyTrack). */
 export class Sfx {
   private ctx: AudioContext | null = null;
   private sfxBus: GainNode | null = null;
   private musicBus: GainNode | null = null;
   private noise: AudioBuffer | null = null;
   private music: Music | null = null;
+  private lobbyTrack: LobbyTrack | null = null;
   private soundOn = true;
   private musicOn = true;
   private wantMusic = false;
+  private scene: 'menu' | 'match' = 'menu';
   private lx = 0;
   private lz = 0;
 
@@ -64,6 +67,7 @@ export class Sfx {
       for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
 
       this.music = new Music(ctx, this.musicBus);
+      this.lobbyTrack = new LobbyTrack(ctx, this.musicBus, LOBBY_TRACK_URL, () => this.applyEnabled());
       this.applyEnabled();
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
@@ -78,6 +82,12 @@ export class Sfx {
   /** Music plays only while wanted (in a match or the menu) and enabled. */
   setMusic(wanted: boolean): void {
     this.wantMusic = wanted;
+    this.applyEnabled();
+  }
+
+  /** Menus play the lobby track (the synth tune if it's missing); matches play the synth tune. */
+  setScene(scene: 'menu' | 'match'): void {
+    this.scene = scene;
     this.applyEnabled();
   }
 
@@ -115,7 +125,11 @@ export class Sfx {
   private applyEnabled(): void {
     if (this.sfxBus) this.sfxBus.gain.value = this.soundOn ? 1 : 0;
     if (!this.music) return;
-    if (this.musicOn && this.wantMusic) this.music.start();
+    const on = this.musicOn && this.wantMusic;
+    const track = this.scene === 'menu' && this.lobbyTrack?.ok ? this.lobbyTrack : null;
+    if (on && track) track.start();
+    else this.lobbyTrack?.stop();
+    if (on && !track) this.music.start();
     else this.music.stop();
   }
 

@@ -5,7 +5,7 @@ import { PANDA_VARIANTS, WEAPON_TYPES, type PandaVariant, type PlayerInput, type
 import type { EncodedSnapshot } from './codec';
 
 /** Bump when messages change so old and new versions refuse to mix. */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /** Room code "K7QX" becomes PeerJS id "bamboo-bloodbath-v1-K7QX" for the host. */
 export const PEER_PREFIX = 'bamboo-bloodbath-v1-';
@@ -36,7 +36,9 @@ export interface LobbyPlayer {
 
 export type ClientMsg =
   | { t: 'hello'; v: number; name: string; variant: PandaVariant; weapon: WeaponType }
-  | { t: 'input'; i: number[] };
+  | { t: 'input'; i: number[] }
+  /** "End match": every human is done, stop waiting for the bots (the host checks). */
+  | { t: 'end' };
 
 export type HostMsg =
   | { t: 'welcome'; id: string }

@@ -1,40 +1,26 @@
-import { DIFFICULTY, type Difficulty } from '../config';
-import { cyclePick, RANDOM_PICK, type MapPick } from '../game/maps';
-import { getRecord } from '../records';
 import { PANDA_LOOKS } from '../render/pandaModel';
 import type { Settings } from '../settings';
 import { PANDA_VARIANTS, type WeaponType } from '../sim/types';
-import { difficultyButtons, el, formatTime, markActive } from './dom';
-import { MapPicker } from './MapPicker';
+import { el } from './dom';
 
-/** One line of personal records for a map at a difficulty ("" for the random pick). */
-function recordLine(pick: MapPick, difficulty: Difficulty): string {
-  if (pick === RANDOM_PICK) return '';
-  const r = getRecord(pick, difficulty);
-  const label = DIFFICULTY[difficulty].label;
-  if (r.plays === 0) return `${label}: not played yet`;
-  const parts = [`won ${r.wins}/${r.plays}`, `most kills ${r.mostKills}`];
-  if (r.bestTime !== null) parts.unshift(`best ${formatTime(r.bestTime)}`);
-  return `${label}: ${parts.join(' · ')}`;
-}
+const ICON_HELP = `<svg viewBox="0 0 24 24"><path d="M8.6 9a3.4 3.4 0 1 1 4.7 3.1c-.8.4-1.3 1.1-1.3 2V15"/><circle class="dot" cx="12" cy="19" r="1.5"/></svg>`;
+const ICON_GEAR = `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5.6"/><circle cx="12" cy="12" r="1.8"/><path d="M12 2.6v3M12 18.4v3M2.6 12h3M18.4 12h3M5.4 5.4l2.1 2.1M16.5 16.5l2.1 2.1M5.4 18.6l2.1-2.1M16.5 7.5l2.1-2.1"/></svg>`;
 
 export interface MenuHandlers {
   onStory(): void;
-  onPlaySolo(): void;
+  onQuickPlay(): void;
   onMultiplayer(): void;
   onSettings(): void;
   onHowTo(): void;
   /** Panda or weapon changed: update the 3D preview. */
   onPreview(): void;
-  /** Map choice changed: show that map behind the menu. */
-  onMapPreview(): void;
   /** Anything changed: persist settings. */
   onChange(): void;
 }
 
+/** Main menu: who you are (name, panda, weapon) and the three ways to play. */
 export class Menu {
   private readonly el: HTMLDivElement;
-  private readonly mapPicker: MapPicker;
 
   constructor(
     parent: HTMLElement,
@@ -44,8 +30,14 @@ export class Menu {
     this.el = el(
       'div',
       'menu',
-      `<div class="menu-panel">
-        <h1 class="logo"><span>Bamboo</span><span class="blood">Bloodbath</span></h1>
+      `<div class="menu-panel main-menu">
+        <div class="menu-head">
+          <h1 class="logo"><span>Bamboo</span><span class="blood">Bloodbath</span></h1>
+          <div class="menu-icons">
+            <button class="icon-btn" data-act="howto" aria-label="How to play" title="How to play">${ICON_HELP}</button>
+            <button class="icon-btn" data-act="settings" aria-label="Settings" title="Settings">${ICON_GEAR}</button>
+          </div>
+        </div>
         <p class="tagline">Cute pandas. Sharp things. Hungry zombies.</p>
         <label class="field">
           <span>Nickname</span>
@@ -65,41 +57,25 @@ export class Menu {
             <button data-act="weapon" data-v="javelin">Javelin</button>
           </div>
         </div>
-        <div class="picker">
-          <span>Bot buddies</span>
-          <div class="seg" data-ref="bots">
-            <button data-act="bots" data-v="0">0</button>
-            <button data-act="bots" data-v="1">1</button>
-            <button data-act="bots" data-v="2">2</button>
-            <button data-act="bots" data-v="3">3</button>
+        <div class="modes">
+          <div class="mode-group">
+            <span class="mode-head">Solo</span>
+            <div class="mode-row">
+              <button class="btn primary big" data-act="story">Story</button>
+              <button class="btn primary big" data-act="quick">Quick play</button>
+            </div>
+          </div>
+          <div class="mode-group">
+            <span class="mode-head">Together</span>
+            <div class="mode-row">
+              <button class="btn primary big" data-act="multi">Multiplayer</button>
+            </div>
           </div>
         </div>
-        <div class="picker">
-          <span>Difficulty</span>
-          <div class="seg" data-ref="difficulty">${difficultyButtons()}</div>
-        </div>
-        <div data-ref="map"></div>
-        <div class="menu-buttons">
-          <button class="btn primary big story" data-act="story">Story</button>
-          <button class="btn primary big" data-act="solo">Play solo</button>
-          <button class="btn" data-act="multi">Multiplayer</button>
-          <button class="btn ghost" data-act="howto">How to play</button>
-          <button class="btn ghost" data-act="settings">Settings</button>
-        </div>
-        <p class="hint small" data-ref="toast"></p>
+        <p class="hint small menu-toast" data-ref="toast"></p>
       </div>`,
     );
     parent.appendChild(this.el);
-
-    this.mapPicker = new MapPicker((dir) => {
-      settings.map = cyclePick(settings.map, dir);
-      this.mapPicker.set(settings.map, true);
-      this.refresh();
-      h.onChange();
-      h.onMapPreview();
-    });
-    this.ref('map').replaceWith(this.mapPicker.el);
-    this.mapPicker.set(settings.map, true);
 
     const name = this.ref<HTMLInputElement>('name');
     name.value = settings.nickname;
@@ -118,8 +94,8 @@ export class Menu {
         case 'story':
           h.onStory();
           break;
-        case 'solo':
-          h.onPlaySolo();
+        case 'quick':
+          h.onQuickPlay();
           break;
         case 'multi':
           h.onMultiplayer();
@@ -142,16 +118,6 @@ export class Menu {
           h.onChange();
           h.onPreview();
           break;
-        case 'bots':
-          settings.bots = Number(t.dataset.v) || 0;
-          this.refresh();
-          h.onChange();
-          break;
-        case 'difficulty':
-          settings.difficulty = t.dataset.v as Difficulty;
-          this.refresh();
-          h.onChange();
-          break;
       }
     });
 
@@ -160,8 +126,7 @@ export class Menu {
 
   show(message = ''): void {
     this.ref('toast').textContent = message;
-    this.mapPicker.set(this.settings.map, true); // may have changed in a lobby
-    this.refresh(); // bots / difficulty may have changed in the story menu or lobby, records after a match
+    this.refresh();
     this.el.hidden = false;
   }
 
@@ -183,11 +148,6 @@ export class Menu {
     for (const b of this.ref('weapons').querySelectorAll<HTMLElement>('[data-v]')) {
       b.classList.toggle('active', b.dataset.v === this.settings.weapon);
     }
-    for (const b of this.ref('bots').querySelectorAll<HTMLElement>('[data-v]')) {
-      b.classList.toggle('active', Number(b.dataset.v) === this.settings.bots);
-    }
-    markActive(this.ref('difficulty'), this.settings.difficulty);
-    this.mapPicker.setNote(recordLine(this.settings.map, this.settings.difficulty));
   }
 
   private ref<T extends HTMLElement = HTMLElement>(name: string): T {
