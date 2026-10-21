@@ -336,7 +336,7 @@ function enterGame(mapRef: MapRef, create: () => Session, intro?: string): void 
   renderer.clearShowcase();
   const map = loadMap(mapRef);
   renderer.setMap(map);
-  hud.setRoute(map.route);
+  hud.setMap(map);
   menu.hide();
   quickPlay.hide();
   lobby.hide();

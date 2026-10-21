@@ -24,18 +24,49 @@ export function drawMinimap(canvas: HTMLCanvasElement, map: GameMap | null): voi
     return;
   }
 
+  const { layout } = map;
+  drawMapBase(ctx, map, w, h);
+  const half = layout.size / 2;
+  const px = (x: number) => ((x + half) / layout.size) * w;
+  const pz = (z: number) => ((z + half) / layout.size) * h;
+  const r = Math.max(3, w * 0.06);
+
+  // Dashed line along the route from the camp to the hut.
+  ctx.strokeStyle = 'rgba(43, 30, 26, 0.6)';
+  ctx.lineWidth = Math.max(1, w * 0.015);
+  ctx.setLineDash([r * 0.6, r * 0.6]);
+  ctx.beginPath();
+  map.route.pts.forEach((p, i) => (i ? ctx.lineTo(px(p.x), pz(p.z)) : ctx.moveTo(px(p.x), pz(p.z))));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const dot = (x: number, z: number, fill: string) => {
+    ctx.beginPath();
+    ctx.arc(px(x), pz(z), r, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, w * 0.025);
+    ctx.strokeStyle = '#2b1e1a';
+    ctx.stroke();
+  };
+  dot(layout.start.x, layout.start.z, '#f28c48');
+  dot(layout.goal.x, layout.goal.z, '#ffe066');
+}
+
+/** Ground, water, bridges and roads of a map seen from above (north up), filling `w`×`h` in `cells`×`cells` squares. */
+export function drawMapBase(ctx: CanvasRenderingContext2D, map: GameMap, w: number, h: number, cells = CELLS): void {
   const { layout, terrain } = map;
   const pal = new GroundPalette(map);
   const water = new THREE.Color(layout.theme.water);
   const shallow = water.clone().lerp(new THREE.Color(layout.theme.ground.shore), 0.5);
   const ice = new THREE.Color(layout.theme.ice ?? 0xd3ecf6);
   const half = layout.size / 2;
-  const cw = w / CELLS;
-  const ch = h / CELLS;
-  for (let j = 0; j < CELLS; j++) {
-    for (let i = 0; i < CELLS; i++) {
-      const x = -half + ((i + 0.5) / CELLS) * layout.size;
-      const z = -half + ((j + 0.5) / CELLS) * layout.size;
+  const cw = w / cells;
+  const ch = h / cells;
+  for (let j = 0; j < cells; j++) {
+    for (let i = 0; i < cells; i++) {
+      const x = -half + ((i + 0.5) / cells) * layout.size;
+      const z = -half + ((j + 0.5) / cells) * layout.size;
       const y = terrain.heightAt(x, z);
       if (terrain.isWater(x, z)) tmp.copy(water);
       else if (terrain.isWet(x, z)) tmp.copy(shallow);
@@ -48,7 +79,6 @@ export function drawMinimap(canvas: HTMLCanvasElement, map: GameMap | null): voi
 
   const px = (x: number) => ((x + half) / layout.size) * w;
   const pz = (z: number) => ((z + half) / layout.size) * h;
-  const r = Math.max(3, w * 0.06);
 
   // Bridges.
   ctx.strokeStyle = '#8b5a3c';
@@ -71,25 +101,4 @@ export function drawMinimap(canvas: HTMLCanvasElement, map: GameMap | null): voi
     ctx.stroke();
   }
   ctx.lineCap = 'butt';
-
-  // Dashed line along the route from the camp to the hut.
-  ctx.strokeStyle = 'rgba(43, 30, 26, 0.6)';
-  ctx.lineWidth = Math.max(1, w * 0.015);
-  ctx.setLineDash([r * 0.6, r * 0.6]);
-  ctx.beginPath();
-  map.route.pts.forEach((p, i) => (i ? ctx.lineTo(px(p.x), pz(p.z)) : ctx.moveTo(px(p.x), pz(p.z))));
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  const dot = (x: number, z: number, fill: string) => {
-    ctx.beginPath();
-    ctx.arc(px(x), pz(z), r, 0, Math.PI * 2);
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.lineWidth = Math.max(1.5, w * 0.025);
-    ctx.strokeStyle = '#2b1e1a';
-    ctx.stroke();
-  };
-  dot(layout.start.x, layout.start.z, '#f28c48');
-  dot(layout.goal.x, layout.goal.z, '#ffe066');
 }

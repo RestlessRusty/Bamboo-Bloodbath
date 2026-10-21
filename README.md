@@ -149,7 +149,8 @@ camera).
 | Gamepad | Left stick (push halfway) | A / X / RT | B / LT | Y / RB | LB |
 
 Attacks auto-aim at the nearest zombie. Firecrackers fly ~9 m the way you're facing. Esc, P or the
-pause button opens the pause menu.
+pause button opens the pause menu. The minimap under the goal arrow shows your team and where to go;
+tap it (or press M) for a bigger map.
 
 ## Project structure
 
@@ -179,7 +180,7 @@ src/
   render/              Three.js drawing only
     Renderer.ts        scene, camera, lights, interpolation, menu showcase
     world.ts           terrain, water, trees, bamboo, camp, rescue hut
-    minimap.ts         top-down map preview for the map picker
+    minimap.ts         top-down map picture for the map picker and the in-game minimap
     snowfall.ts        falling snow on snowy maps
     pandaModel.ts      survivor panda model + animation
     horde.ts           all zombies via instanced meshes
@@ -194,7 +195,7 @@ src/
   net/                 PeerJS host & client, message protocol, compact snapshot codec
   audio/               synthesised sound effects and music (no audio files)
   input/               joystick, tilt, tap & swipe, keyboard, gamepad → PlayerInput
-  ui/                  menu, lobby, settings, HUD, story menu / cards / dialogue (plain DOM)
+  ui/                  menu, lobby, settings, HUD + minimap, story menu / cards / dialogue (plain DOM)
 ```
 
 The simulation and the renderer only talk through `PlayerInput` (in) and `Snapshot` (out), which is

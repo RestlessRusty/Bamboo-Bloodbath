@@ -1,7 +1,9 @@
 import { DOWNED, JAVELIN, NOISE, SURVIVOR } from '../config';
+import type { GameMap } from '../sim/gameMap';
 import type { Route } from '../sim/route';
 import type { PlayerSpec, Snapshot, SurvivorSnap } from '../sim/types';
 import { el, formatTime } from './dom';
+import { HudMap } from './HudMap';
 
 export type EndMode = 'solo' | 'host' | 'guest' | 'story';
 
@@ -59,6 +61,8 @@ export class Hud {
   private readonly pausePanel: HTMLElement;
   private readonly pauseNote: HTMLElement;
   private readonly endPanel: HTMLElement;
+  private readonly mapBig: HTMLElement;
+  private readonly minimap: HudMap;
   private readonly rows = new Map<string, TeamRow>();
   private names = new Map<string, string>();
   private localId = '';
@@ -89,6 +93,7 @@ export class Hud {
         <span data-ref="dist"></span>
         <span class="hud-saved" data-ref="saved"></span>
       </div>
+      <button class="hud-map" data-act="map" aria-label="Map"><canvas data-ref="map"></canvas></button>
       <button class="btn small hud-end" data-act="end-match" data-ref="end-match" hidden>
         End match<small data-ref="bots-out"></small>
       </button>
@@ -99,6 +104,10 @@ export class Hud {
       </div>
       <div class="hud-fps" data-ref="fps" hidden></div>
       <div class="hud-msg" data-ref="msg"></div>
+      <div class="hud-map-big" data-act="map" data-ref="map-big" hidden>
+        <canvas data-ref="map-big-canvas"></canvas>
+        <span>Tap to close</span>
+      </div>
       <div class="overlay" data-ref="pause" hidden>
         <div class="card">
           <h2>Paused</h2>
@@ -149,7 +158,12 @@ export class Hud {
     this.pausePanel = this.ref('pause');
     this.pauseNote = this.ref('pause-note');
     this.endPanel = this.ref('end');
+    this.mapBig = this.ref('map-big');
+    this.minimap = new HudMap(this.ref<HTMLCanvasElement>('map'), this.ref<HTMLCanvasElement>('map-big-canvas'));
 
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyM' && !e.repeat && !this.el.hidden && !(e.target instanceof HTMLInputElement)) this.toggleMap();
+    });
     this.el.addEventListener('click', (e) => {
       const act = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')?.dataset.act;
       if (act === 'pause') h.onPause();
@@ -162,15 +176,18 @@ export class Hud {
       else if (act === 'checkpoint') h.onCheckpoint();
       else if (act === 'chapters') h.onChapters();
       else if (act === 'end-match') h.onEndMatch();
+      else if (act === 'map') this.toggleMap();
     });
   }
 
-  /** The way to the rescue hut on this match's map: the arrow points along it. */
-  setRoute(route: Route): void {
-    this.route = route;
+  /** This match's map: the arrow points along the way to the rescue hut, and the minimap shows it. */
+  setMap(map: GameMap): void {
+    this.route = map.route;
+    this.minimap.setMap(map);
   }
 
   setTeam(specs: readonly PlayerSpec[], localId: string): void {
+    this.minimap.setTeam(specs, localId);
     this.localId = localId;
     this.total = specs.length;
     this.names = new Map(specs.map((s) => [s.id, s.name]));
@@ -191,6 +208,7 @@ export class Hud {
     this.endPanel.hidden = true;
     this.endBtn.hidden = true;
     this.endOffered = false;
+    this.mapBig.hidden = true;
     this.msg.classList.remove('show');
   }
 
@@ -226,6 +244,7 @@ export class Hud {
     }
     this.endPanel.classList.toggle('won', won);
     this.endBtn.hidden = true;
+    this.mapBig.hidden = true;
     this.pausePanel.hidden = true;
     this.endPanel.hidden = false;
   }
@@ -278,6 +297,7 @@ export class Hud {
       this.setText(this.saved, this.total > 1 ? `🏠 ${snap.rescued}/${this.total}` : '');
     }
     this.updateEndButton(snap);
+    this.minimap.update(snap, this.time, !this.mapBig.hidden);
 
     this.fps.hidden = fps === null;
     if (fps !== null) this.setText(this.fps, `${fps} fps`);
@@ -356,6 +376,11 @@ export class Hud {
       this.setText(this.reviveText, text);
       this.reviveFill.style.width = `${progress * 100}%`;
     }
+  }
+
+  /** Enlarge the corner map in the middle of the screen, or put it back (the game keeps running). */
+  private toggleMap(): void {
+    this.mapBig.hidden = !this.mapBig.hidden;
   }
 
   private setText(e: HTMLElement, text: string): void {

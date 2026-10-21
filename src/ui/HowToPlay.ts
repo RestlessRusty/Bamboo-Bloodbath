@@ -41,6 +41,7 @@ const KEYS: Rows = [
   ['Dash', '<kbd>Shift</kbd>'],
   ['Firecracker', '<kbd>E</kbd>'],
   ['Switch weapon', '<kbd>R</kbd> or <kbd>Tab</kbd>'],
+  ['Big map', '<kbd>M</kbd>'],
   ['Pause', '<kbd>Esc</kbd>'],
 ];
 
