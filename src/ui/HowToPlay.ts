@@ -9,6 +9,7 @@ const BUTTONS: Rows = [
   ['Attack', 'Big red button (hold to keep swinging)'],
   ['Dash', 'Blue button'],
   ['Firecracker', 'Orange button'],
+  ['Switch weapon', 'Purple button (once a rack gave you a second one)'],
 ];
 
 const TOUCH: Record<ControlScheme, { name: string; rows: Rows }> = {
@@ -27,6 +28,7 @@ const TOUCH: Record<ControlScheme, { name: string; rows: Rows }> = {
       ['Attack', 'Swipe in a direction'],
       ['Dash', 'Double-tap'],
       ['Firecracker', 'Orange button'],
+      ['Switch weapon', 'Purple button'],
       ['Sneak', 'Tricky in this mode: try Joystick'],
     ],
   },
@@ -38,6 +40,7 @@ const KEYS: Rows = [
   ['Attack', '<kbd>Space</kbd>'],
   ['Dash', '<kbd>Shift</kbd>'],
   ['Firecracker', '<kbd>E</kbd>'],
+  ['Switch weapon', '<kbd>R</kbd> or <kbd>Tab</kbd>'],
   ['Pause', '<kbd>Esc</kbd>'],
 ];
 
@@ -46,6 +49,7 @@ const PAD: Rows = [
   ['Attack', '<kbd>A</kbd> / <kbd>X</kbd> / <kbd>RT</kbd>'],
   ['Dash', '<kbd>B</kbd> / <kbd>LT</kbd>'],
   ['Firecracker', '<kbd>Y</kbd> / <kbd>RB</kbd>'],
+  ['Switch weapon', '<kbd>LB</kbd>'],
   ['Pause', '<kbd>Start</kbd>'],
 ];
 
@@ -53,7 +57,10 @@ const RULES: Rows = [
   ['Bamboo', 'Snacks heal you. Hide in thickets: zombies only spot you up close.'],
   ['Sleepers', 'Zzz… Walk slowly to sneak past, or creep up for a one-hit kill. Running, dashing and splashing wake them.'],
   ['Firecrackers', 'Throw one to pull zombies in, then BANG: they’re stunned. Carry up to 3; zombies drop more.'],
-  ['Weapons', 'Walk over a rack to swap. Knife: fast and quiet. Axe: big hits, but loud. Javelins: throw, then pick them up.'],
+  [
+    'Weapons',
+    'You keep the one you start with; a rack adds a second (racks restock after 30 s). Knife: fast and quiet. Axe: big hits, but loud. Javelins: one throw kills and goes through the first zombie; pick them up or carve new ones.',
+  ],
   ['Downed?', 'Stand next to a downed friend to revive them. After 10 seconds they turn into a zombie!'],
   ['Water', 'Zombies can’t swim: they cross only at bridges and shallow fords. You can, slowly. Ice is slippery!'],
 ];

@@ -18,8 +18,15 @@ export interface Survivor {
   hidden: boolean;
   hp: number;
   state: SurvivorState;
+  /** Weapon in hand: always `main` or `extra`. */
   weapon: WeaponType;
+  /** Starting weapon, never lost. */
+  main: WeaponType;
+  /** Second slot, filled at weapon racks (a new rack weapon replaces it). */
+  extra: WeaponType | null;
   ammo: number;
+  /** Seconds spent carving the next javelin (while one slot holds javelins and some are missing). */
+  carve: number;
   kills: number;
   /** Seconds since the current attack started, -1 when idle. */
   attackTime: number;
@@ -96,6 +103,8 @@ export interface Javelin {
   pitch: number;
   flying: boolean;
   age: number;
+  /** Zombies this throw went through so far (it pierces the first one). */
+  hits: number[];
 }
 
 export interface Cracker {
@@ -133,5 +142,8 @@ export interface RackSlot {
   x: number;
   y: number;
   z: number;
+  /** What this rack hands out (always the same). */
   weapon: WeaponType;
+  /** Seconds until it's stocked again after someone took from it (0: stocked). */
+  refill: number;
 }

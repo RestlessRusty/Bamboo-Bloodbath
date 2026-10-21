@@ -1,6 +1,7 @@
 import { clamp } from '../core/math';
 import type { ControlScheme } from '../settings';
-import { NO_INPUT, type PlayerInput } from '../sim/types';
+import { NO_INPUT, type PlayerInput, type WeaponType } from '../sim/types';
+import { WEAPONS } from '../sim/weapons';
 import { el } from '../ui/dom';
 
 export interface InputHooks {
@@ -26,6 +27,12 @@ const DASH_ICON = '<svg viewBox="0 0 24 24"><path d="M3 8h9M2 12h10M3 16h9M14 6l
 const CRACKER_ICON =
   '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="5" height="11" rx="1"/><rect x="11" y="8" width="5" height="13" rx="1"/>' +
   '<path d="M13.5 8c0-2 1-3.5 3-4M18 2.5l1 1.5M20.5 5l-1.5.5M19 1l-.3 1.2"/></svg>';
+/** The switch button shows the weapon you'd switch to. */
+const WEAPON_ICONS: Record<WeaponType, string> = {
+  knife: '<svg viewBox="0 0 24 24"><path d="M4.5 19.5l3-3M7.5 16.5L18 6l1 4-8.5 8.5z"/></svg>',
+  axe: '<svg viewBox="0 0 24 24"><path d="M5 20l9.5-11.5"/><path d="M11 6.5c2.5-3 7-3.5 9-1-2.5.5-4 2.5-4.5 5z"/></svg>',
+  javelin: '<svg viewBox="0 0 24 24"><path d="M4 20L18.5 5.5M19.5 4.5l-5.5 1 4.5 4.5z"/></svg>',
+};
 
 interface TapPointer {
   id: number;
@@ -65,6 +72,8 @@ export class InputManager {
   private readonly crackerBtn: HTMLButtonElement;
   private readonly crackerCount: HTMLSpanElement;
   private crackersShown = -1;
+  private readonly swapBtn: HTMLButtonElement;
+  private otherShown: WeaponType | null | undefined = undefined;
 
   private joyId: number | null = null;
   private joyOX = 0;
@@ -76,12 +85,14 @@ export class InputManager {
   private attackPulse = false;
   private dashPulse = false;
   private crackerPulse = false;
+  private swapPulse = false;
   private aimX = 0;
   private aimZ = 0;
 
   private readonly keys = new Set<string>();
   private padDashHeld = false;
   private padCrackerHeld = false;
+  private padSwapHeld = false;
   private padPauseHeld = false;
 
   private beta: number | null = null;
@@ -111,7 +122,9 @@ export class InputManager {
     attack.setAttribute('aria-label', 'Attack');
     dash.setAttribute('aria-label', 'Dash');
     this.crackerBtn.setAttribute('aria-label', 'Throw firecracker');
-    this.layer.append(this.joyBase, attack, dash, this.crackerBtn);
+    this.swapBtn = el('button', 'act-btn swap');
+    this.swapBtn.hidden = true;
+    this.layer.append(this.joyBase, attack, dash, this.crackerBtn, this.swapBtn);
     parent.appendChild(this.layer);
 
     this.layer.addEventListener('pointerdown', this.onDown);
@@ -129,6 +142,9 @@ export class InputManager {
     });
     this.bindButton(this.crackerBtn, (down) => {
       if (down) this.crackerPulse = true;
+    });
+    this.bindButton(this.swapBtn, (down) => {
+      if (down) this.swapPulse = true;
     });
 
     window.addEventListener('keydown', this.onKeyDown);
@@ -164,6 +180,16 @@ export class InputManager {
     this.crackerBtn.classList.toggle('empty', n <= 0);
   }
 
+  /** The weapon in the other slot, shown on the switch button (null hides it: nothing to switch to). */
+  setOtherWeapon(w: WeaponType | null): void {
+    if (w === this.otherShown) return;
+    this.otherShown = w;
+    this.swapBtn.hidden = w === null;
+    if (!w) return;
+    this.swapBtn.innerHTML = WEAPON_ICONS[w];
+    this.swapBtn.setAttribute('aria-label', `Switch to ${WEAPONS[w].label.toLowerCase()}`);
+  }
+
   calibrateTilt(): void {
     if (this.beta === null || this.gamma === null) {
       this.needsCalibration = true;
@@ -183,11 +209,13 @@ export class InputManager {
     let attack = this.attackHeld || this.attackPulse;
     let dash = this.dashPulse;
     let cracker = this.crackerPulse;
+    let swap = this.swapPulse;
     const ax = this.aimX;
     const az = this.aimZ;
     this.attackPulse = false;
     this.dashPulse = false;
     this.crackerPulse = false;
+    this.swapPulse = false;
     this.aimX = 0;
     this.aimZ = 0;
 
@@ -223,6 +251,9 @@ export class InputManager {
       const crackerBtn = pressed(3) || pressed(5);
       if (crackerBtn && !this.padCrackerHeld) cracker = true;
       this.padCrackerHeld = crackerBtn;
+      const swapBtn = pressed(4);
+      if (swapBtn && !this.padSwapHeld) swap = true;
+      this.padSwapHeld = swapBtn;
       const pauseBtn = pressed(9);
       if (pauseBtn && !this.padPauseHeld) this.hooks.onPause();
       this.padPauseHeld = pauseBtn;
@@ -264,7 +295,7 @@ export class InputManager {
       mx /= len;
       mz /= len;
     }
-    return { mx, mz, ax, az, attack, dash, cracker };
+    return { mx, mz, ax, az, attack, dash, cracker, swap };
   }
 
   private resetState(): void {
@@ -279,6 +310,7 @@ export class InputManager {
     this.attackPulse = false;
     this.dashPulse = false;
     this.crackerPulse = false;
+    this.swapPulse = false;
     this.aimX = 0;
     this.aimZ = 0;
     this.tap = null;
@@ -388,7 +420,10 @@ export class InputManager {
     if (!e.repeat && (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyK')) this.dashPulse = true;
     if (!e.repeat && (e.code === 'Space' || e.code === 'KeyJ')) this.attackPulse = true;
     if (!e.repeat && (e.code === 'KeyE' || e.code === 'KeyL')) this.crackerPulse = true;
+    if (!e.repeat && (e.code === 'KeyR' || e.code === 'Tab')) this.swapPulse = true;
     if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+    // Tab still moves focus in the menus; in a match it's the switch key.
+    if (e.code === 'Tab' && this.enabled) e.preventDefault();
   };
 
   private readonly onOrientation = (e: DeviceOrientationEvent): void => {

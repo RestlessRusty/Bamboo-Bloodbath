@@ -156,8 +156,10 @@ export const PICKUP = {
   bambooRespawn: 40,
   bambooRadius: 1.1,
   rackRadius: 1.2,
-  /** Distance you must walk away from a rack before it can swap with you again. */
+  /** Distance you must walk away from a rack before it can hand you something again. */
   rackLeave: 2.2,
+  /** Seconds a rack stays empty after someone took from it. */
+  rackRefill: 30,
 };
 
 export const JAVELIN = {
@@ -169,9 +171,14 @@ export const JAVELIN = {
   hitRadius: 0.6,
   pickupRadius: 1.1,
   groundLife: 90,
-  damage: 35,
+  /** One throw kills a zombie (ZOMBIE.hp 40). */
+  damage: 45,
   knockback: 6,
   stun: 0.4,
+  /** Zombies one throw can hit: it goes through the first. */
+  pierce: 2,
+  /** Seconds to carve a new javelin while some are missing. */
+  carve: 8,
 };
 
 export const CAMERA = {

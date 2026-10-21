@@ -5,7 +5,7 @@ import { PANDA_VARIANTS, WEAPON_TYPES, type PandaVariant, type PlayerInput, type
 import type { EncodedSnapshot } from './codec';
 
 /** Bump when messages change so old and new versions refuse to mix. */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /** Room code "K7QX" becomes PeerJS id "bamboo-bloodbath-v1-K7QX" for the host. */
 export const PEER_PREFIX = 'bamboo-bloodbath-v1-';
@@ -63,7 +63,7 @@ export type HostMsg =
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
 export function encodeInput(i: PlayerInput): number[] {
-  return [r2(i.mx), r2(i.mz), r2(i.ax), r2(i.az), (i.attack ? 1 : 0) | (i.dash ? 2 : 0) | (i.cracker ? 4 : 0)];
+  return [r2(i.mx), r2(i.mz), r2(i.ax), r2(i.az), (i.attack ? 1 : 0) | (i.dash ? 2 : 0) | (i.cracker ? 4 : 0) | (i.swap ? 8 : 0)];
 }
 
 /** Defensive: never trust numbers coming over the wire. */
@@ -79,6 +79,7 @@ export function decodeInput(raw: unknown): PlayerInput {
     attack: (flags & 1) !== 0,
     dash: (flags & 2) !== 0,
     cracker: (flags & 4) !== 0,
+    swap: (flags & 8) !== 0,
   };
 }
 

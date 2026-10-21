@@ -70,9 +70,14 @@ register it.
   through a narrow shortcut. **Frozen ponds** are walkable but slippery for everyone.
 - **Bamboo thickets** hide you: zombies only notice you when they're very close (attacking reveals you).
 - **Bamboo snacks** (glowing green) heal 35 HP and grow back after a while.
-- **Weapon racks** (glowing yellow): walk into one to swap your weapon for the one on the rack.
-  - Knife: fast, short. Axe: slow, big hits and knockback. Javelin: thrown (2 carried) — walk over
-    thrown javelins to pick them up; without javelins you slap.
+- **Two weapon slots.** You always keep the weapon you picked in the menu. Walking into a **weapon
+  rack** (glowing yellow) puts its weapon in your second slot (replacing whatever was there) and in
+  your paw; the purple button switches between the two (a short draw before you can attack). A rack
+  stands empty for 30 s after someone took from it; a javelin rack also tops up javelins you carry.
+  - Knife: fast, short. Axe: slow, big hits and knockback.
+  - Javelin: thrown (2 carried). One throw kills and goes through the first zombie into a second.
+    Walk over thrown javelins to pick them up; missing ones are also carved back, one every 8 s.
+    Out of javelins you switch to your other weapon automatically, or slap if you have none.
 - At 0 HP you're **downed**. A teammate standing next to you for 2.5 s revives you. Nobody comes
   within 10 s → you **turn into a zombie** and keep your name… in green.
 - **Bot buddies** (0–3) follow you, fight, revive and eat on their own.
@@ -133,13 +138,13 @@ camera).
 
 ## Controls
 
-| Scheme | Move (sneak) | Attack | Dash | Firecracker |
-|---|---|---|---|---|
-| Joystick (default) | Thumb on the left half (push halfway) | Red button | Blue button | Orange button |
-| Tilt | Tilt the phone (tilt gently) | Red button | Blue button | Orange button |
-| Tap & swipe | Tap the ground / hold to steer | Swipe in a direction | Double-tap | Orange button |
-| Keyboard | WASD / arrows (hold C or Q) | Space or J | Shift or K | E or L |
-| Gamepad | Left stick (push halfway) | A / X / RT | B / LT | Y / RB |
+| Scheme | Move (sneak) | Attack | Dash | Firecracker | Switch weapon |
+|---|---|---|---|---|---|
+| Joystick (default) | Thumb on the left half (push halfway) | Red button | Blue button | Orange button | Purple button |
+| Tilt | Tilt the phone (tilt gently) | Red button | Blue button | Orange button | Purple button |
+| Tap & swipe | Tap the ground / hold to steer | Swipe in a direction | Double-tap | Orange button | Purple button |
+| Keyboard | WASD / arrows (hold C or Q) | Space or J | Shift or K | E or L | R or Tab |
+| Gamepad | Left stick (push halfway) | A / X / RT | B / LT | Y / RB | LB |
 
 Attacks auto-aim at the nearest zombie. Firecrackers fly ~9 m the way you're facing. Esc, P or the
 pause button opens the pause menu.

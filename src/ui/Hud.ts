@@ -289,9 +289,12 @@ export class Hud {
     this.hpFill.style.width = `${hp * 100}%`;
     this.hpFill.className = `hud-hp-fill ${hp > 0.5 ? 'good' : hp > 0.25 ? 'ok' : 'bad'}`;
     this.setText(this.hpText, `${Math.max(0, Math.ceil(me.hp))}`);
+    // Shown while javelins are in either slot (they get carved back while stowed too).
     this.setText(
       this.ammo,
-      me.weapon === 'javelin' ? `Javelins ${'●'.repeat(me.ammo)}${'○'.repeat(Math.max(0, JAVELIN.ammo - me.ammo))}` : '',
+      me.weapon === 'javelin' || me.other === 'javelin'
+        ? `Javelins ${'●'.repeat(me.ammo)}${'○'.repeat(Math.max(0, JAVELIN.ammo - me.ammo))}`
+        : '',
     );
     this.setText(this.crackers, me.state === 'active' ? `Firecrackers ×${me.crackers}` : '');
 

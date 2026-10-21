@@ -27,7 +27,7 @@ import { Obstacles } from './steering';
 import type { Mission, MissionHost } from './story/Mission';
 import type { HordeRules } from './story/types';
 import { NO_INPUT, type GameEvent, type MatchPhase, type PlayerInput, type PlayerSpec, type Snapshot } from './types';
-import { PAW, WEAPONS, type MeleeDef } from './weapons';
+import { hasJavelins, PAW, stowed, SWITCH_TIME, WEAPONS, type MeleeDef } from './weapons';
 
 /** Rule changes for one match (story chapters). Everything defaults to the normal game. */
 export interface SimOptions {
@@ -153,7 +153,7 @@ export class Simulation implements BotWorld, MissionHost {
       ...(map.layout.landmarks ?? []).map((l) => ({ x: l.x, z: l.z, r: l.r })),
     ]);
     this.bamboo = props.bambooSpots.map((b) => ({ ...b, active: true, respawn: 0 }));
-    this.racks = props.racks.map((r) => ({ ...r }));
+    this.racks = props.racks.map((r) => ({ ...r, refill: 0 }));
 
     this.buildStatic();
     specs.filter((s) => !s.npc).forEach((spec, i) => this.spawnSurvivor(spec, i));
@@ -232,6 +232,7 @@ export class Simulation implements BotWorld, MissionHost {
         hp: Math.ceil(s.hp),
         state: s.state,
         weapon: s.weapon,
+        other: stowed(s),
         ammo: s.ammo,
         bleed: s.state === 'downed' ? s.bleed : 0,
         revive: s.revive,
@@ -256,7 +257,7 @@ export class Simulation implements BotWorld, MissionHost {
       crackers: this.crackers.map((c) => ({ id: c.id, x: c.x, y: c.y, z: c.z, flying: c.flying })),
       crackerDrops: this.crackerDrops.map((d) => ({ id: d.id, x: d.x, y: d.y, z: d.z })),
       bamboo: this.bamboo.map((b) => b.active),
-      racks: this.racks.map((r) => r.weapon),
+      racks: this.racks.map((r) => (r.refill > 0 ? null : r.weapon)),
       events,
       story: this.mission?.snapshot(),
     };
@@ -558,7 +559,10 @@ export class Simulation implements BotWorld, MissionHost {
       hp: SURVIVOR.maxHp,
       state: 'active',
       weapon: spec.weapon,
+      main: spec.weapon,
+      extra: null,
       ammo: spec.weapon === 'javelin' ? JAVELIN.ammo : 0,
+      carve: 0,
       kills: 0,
       attackTime: -1,
       attackHit: false,
@@ -664,6 +668,18 @@ export class Simulation implements BotWorld, MissionHost {
     s.crackerCd = Math.max(0, s.crackerCd - SIM_DT);
     if (inp.cracker && s.crackers > 0 && s.crackerCd === 0) this.throwCracker(s, inp);
 
+    // Javelins get carved back one at a time while any are missing (in hand or stowed).
+    if (hasJavelins(s) && s.ammo < JAVELIN.ammo) {
+      s.carve += SIM_DT;
+      if (s.carve >= JAVELIN.carve) {
+        s.carve = 0;
+        s.ammo++;
+        this.events.push({ e: 'grab', id: s.spec.id });
+      }
+    } else {
+      s.carve = 0;
+    }
+
     if (s.attackTime >= 0) {
       s.attackTime += SIM_DT;
       if (!s.attackHit && s.attackTime >= weapon.hitAt) {
@@ -671,8 +687,13 @@ export class Simulation implements BotWorld, MissionHost {
         if (s.throwing) this.throwJavelin(s);
         else this.melee(s, s.weapon === 'javelin' ? PAW : weapon);
       }
-      if (s.attackTime >= weapon.duration) s.attackTime = -1;
+      if (s.attackTime >= weapon.duration) {
+        s.attackTime = -1;
+        // Out of javelins: straight to the other weapon rather than slapping.
+        if (s.weapon === 'javelin' && s.ammo === 0 && stowed(s)) this.switchWeapon(s);
+      }
     }
+    if (inp.swap && s.attackTime < 0 && stowed(s)) this.switchWeapon(s);
     if (inp.attack && s.attackCd === 0 && s.attackTime < 0) {
       s.throwing = s.weapon === 'javelin' && s.ammo > 0;
       this.aimAttack(s, inp);
@@ -704,6 +725,15 @@ export class Simulation implements BotWorld, MissionHost {
     }
     const grip = this.map.terrain.isIce(s.x, s.z) ? ICE_GRIP : 1;
     this.drive(body, tx, tz, s.dashTime > 0 ? Infinity : SURVIVOR.accel * grip);
+  }
+
+  /** Takes the other slot's weapon in hand; attacking waits a moment while it's drawn. */
+  private switchWeapon(s: Survivor): void {
+    const next = stowed(s);
+    if (!next) return;
+    s.weapon = next;
+    s.attackCd = Math.max(s.attackCd, SWITCH_TIME);
+    this.events.push({ e: 'draw', id: s.spec.id, w: next });
   }
 
   /** Explicit aim wins; otherwise snap towards the closest zombie (or one ahead for throws). */
@@ -776,6 +806,7 @@ export class Simulation implements BotWorld, MissionHost {
       pitch: Math.atan2(JAVELIN.lift, JAVELIN.speed),
       flying: true,
       age: 0,
+      hits: [],
     });
     this.events.push({ e: 'throw', id: s.spec.id });
   }
@@ -1269,12 +1300,16 @@ export class Simulation implements BotWorld, MissionHost {
 
       let landed = false;
       for (const z of this.zombies) {
-        if (z.state === 'dying') continue;
+        if (z.state === 'dying' || j.hits.includes(z.id)) continue;
         if (Math.hypot(nx - z.x, nz - z.z) < JAVELIN.hitRadius && ny > z.y && ny < z.y + 1.7) {
           const sp = Math.hypot(j.vx, j.vz) || 1;
           this.damageZombie(z, JAVELIN.damage, j.vx / sp, j.vz / sp, JAVELIN.knockback, JAVELIN.stun, j.owner);
-          this.dropJavelin(j, z.x, z.z, 0);
-          landed = true;
+          j.hits.push(z.id);
+          // Through the first zombie, stuck in the next one.
+          if (j.hits.length >= JAVELIN.pierce) {
+            this.dropJavelin(j, z.x, z.z, 0);
+            landed = true;
+          }
           break;
         }
       }
@@ -1444,30 +1479,43 @@ export class Simulation implements BotWorld, MissionHost {
       this.events.push({ e: 'eat', id: eater.spec.id });
     }
 
+    // Racks hand out a copy of their weapon into the second slot (your starting weapon stays),
+    // or top up javelins you already carry; then they stand empty for a while.
     this.racks.forEach((r, i) => {
+      if (r.refill > 0) r.refill = Math.max(0, r.refill - SIM_DT);
       for (const s of active) {
         const d = dist2d(s, r);
         if (s.lastRack === i) {
           if (d > PICKUP.rackLeave) s.lastRack = -1;
           continue;
         }
-        if (d > PICKUP.rackRadius || r.weapon === s.weapon) continue;
-        const old = s.weapon;
-        s.weapon = r.weapon;
-        r.weapon = old;
-        s.ammo = s.weapon === 'javelin' ? JAVELIN.ammo : 0;
-        s.attackTime = -1;
+        // Doc doesn't use racks, so she can't empty one right before you get there.
+        if (s.npc || r.refill > 0 || d > PICKUP.rackRadius) continue;
+        const have = r.weapon === s.main || r.weapon === s.extra;
+        if (have && !(r.weapon === 'javelin' && s.ammo < JAVELIN.ammo)) continue;
+        if (!have) {
+          if (s.weapon !== s.main) s.attackTime = -1; // the old second weapon is dropped mid-swing
+          s.extra = r.weapon;
+          if (!hasJavelins(s)) s.ammo = 0;
+          if (s.attackTime < 0) {
+            s.weapon = r.weapon;
+            s.attackCd = Math.max(s.attackCd, SWITCH_TIME);
+          }
+        }
+        if (r.weapon === 'javelin') {
+          s.ammo = JAVELIN.ammo;
+          s.carve = 0;
+        }
+        r.refill = PICKUP.rackRefill;
         s.lastRack = i;
-        this.events.push({ e: 'swap', id: s.spec.id, w: s.weapon });
+        this.events.push({ e: 'swap', id: s.spec.id, w: r.weapon });
       }
     });
 
     for (let i = this.javelins.length - 1; i >= 0; i--) {
       const j = this.javelins[i];
       if (j.flying) continue;
-      const taker = active.find(
-        (s) => s.weapon === 'javelin' && s.ammo < JAVELIN.ammo && dist2d(s, j) < JAVELIN.pickupRadius,
-      );
+      const taker = active.find((s) => hasJavelins(s) && s.ammo < JAVELIN.ammo && dist2d(s, j) < JAVELIN.pickupRadius);
       if (!taker) continue;
       taker.ammo++;
       this.javelins.splice(i, 1);

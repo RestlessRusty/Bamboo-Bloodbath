@@ -7,6 +7,7 @@ import { buildWeapon } from './weaponModels';
 
 interface RackView {
   holder: THREE.Group;
+  glow: THREE.Mesh;
   weapon: WeaponType | null;
 }
 
@@ -64,7 +65,7 @@ export class PickupsView {
       holder.position.set(0, 1.45, 0);
       g.add(holder);
       this.group.add(g);
-      this.racks.push({ holder, weapon: null });
+      this.racks.push({ holder, glow, weapon: null });
     }
   }
 
@@ -81,13 +82,16 @@ export class PickupsView {
     this.glowMat.opacity = 0.35 + 0.2 * Math.sin(time * 3);
     this.rackGlowMat.opacity = 0.3 + 0.2 * Math.sin(time * 2.2);
 
+    // An empty rack (someone just took from it) shows just its frame until it's stocked again.
     this.racks.forEach((r, i) => {
-      const w = curr.racks[i];
+      const w = curr.racks[i] ?? null;
       if (w && w !== r.weapon) {
         r.holder.clear();
         r.holder.add(buildWeapon(w));
         r.weapon = w;
       }
+      r.holder.visible = w !== null;
+      r.glow.visible = w !== null;
       r.holder.rotation.y = Math.sin(time * 1.5 + i) * 0.5;
     });
 

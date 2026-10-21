@@ -27,9 +27,11 @@ export interface PlayerInput {
   dash: boolean;
   /** Throw a firecracker (one-shot, like dash). Uses the aim if given, else the facing. */
   cracker: boolean;
+  /** Switch to the weapon in the other slot (one-shot). */
+  swap: boolean;
 }
 
-export const NO_INPUT: Readonly<PlayerInput> = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false };
+export const NO_INPUT: Readonly<PlayerInput> = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false, swap: false };
 
 export type SurvivorState = 'active' | 'downed' | 'rescued' | 'dead';
 export type MatchPhase = 'playing' | 'won' | 'lost';
@@ -51,7 +53,11 @@ export interface SurvivorSnap {
   hidden: boolean;
   hp: number;
   state: SurvivorState;
+  /** Weapon in hand. */
   weapon: WeaponType;
+  /** The other slot's weapon (switch to it), or null with just the starting weapon. */
+  other: WeaponType | null;
+  /** Javelins carried (when one of the slots holds javelins). */
   ammo: number;
   /** Seconds until a downed survivor turns. */
   bleed: number;
@@ -120,7 +126,10 @@ export type GameEvent =
   | { e: 'turned'; id: string }
   | { e: 'rescued'; id: string }
   | { e: 'eat'; id: string }
+  /** Took a weapon from a rack (or refilled javelins there). */
   | { e: 'swap'; id: string; w: WeaponType }
+  /** Switched to the weapon in the other slot. */
+  | { e: 'draw'; id: string; w: WeaponType }
   | { e: 'grab'; id: string }
   | { e: 'splash'; x: number; z: number }
   | { e: 'thud'; x: number; y: number; z: number }
@@ -194,8 +203,8 @@ export interface Snapshot {
   crackerDrops: CrackerDropSnap[];
   /** Which bamboo snack spots currently have food (same order as MapProps.bambooSpots). */
   bamboo: boolean[];
-  /** Weapon currently on each rack (same order as MapProps.racks). */
-  racks: WeaponType[];
+  /** Weapon on each rack, null while it's empty after someone took it (same order as MapProps.racks). */
+  racks: (WeaponType | null)[];
   /** Things that happened since the previous snapshot (sounds, effects, messages). */
   events: GameEvent[];
   /** Story mode only. */

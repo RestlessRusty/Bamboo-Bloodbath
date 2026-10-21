@@ -19,7 +19,7 @@ export class DocBrain implements Brain {
   private readonly walker = new Walker();
 
   think(me: Survivor, w: BotWorld, dt: number): PlayerInput {
-    const out: PlayerInput = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false };
+    const out: PlayerInput = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false, swap: false };
 
     let threat: Zombie | null = null;
     let td = Infinity;

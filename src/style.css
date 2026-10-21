@@ -872,6 +872,14 @@ small {
 .act-btn.cracker.empty {
   opacity: 0.45;
 }
+/* Switch weapon: above the dash button, showing the weapon you'd switch to. */
+.act-btn.swap {
+  right: calc(144px + var(--safe-r));
+  bottom: calc(104px + var(--safe-b));
+  width: 54px;
+  height: 54px;
+  background: #8a6fd1;
+}
 .act-count {
   position: absolute;
   top: -8px;
@@ -889,7 +897,7 @@ small {
   text-align: center;
 }
 .touch-layer:not([data-scheme='joystick']) .joy-base,
-.touch-layer[data-scheme='tap'] .act-btn:not(.cracker) {
+.touch-layer[data-scheme='tap'] .act-btn:not(.cracker):not(.swap) {
   display: none;
 }
 

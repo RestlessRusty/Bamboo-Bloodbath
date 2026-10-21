@@ -127,7 +127,9 @@ export class LocalGame implements Session {
     renderer.updateGame(frozen ? 0 : dt, this.prev, this.curr, frozen ? 1 : this.acc / SIM_DT, this.localId);
     hud.update(this.curr, fps);
     this.ctx.story?.update(this.curr, frozen ? 0 : dt);
-    input.setCrackerCount(this.curr.survivors.find((s) => s.id === this.localId)?.crackers ?? 0);
+    const me = this.curr.survivors.find((s) => s.id === this.localId);
+    input.setCrackerCount(me?.crackers ?? 0);
+    input.setOtherWeapon(me?.state === 'active' ? me.other : null);
   }
 
   dispose(): void {

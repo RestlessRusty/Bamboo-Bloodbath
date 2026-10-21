@@ -135,12 +135,12 @@ export class NetHost {
     this.broadcast({ t: 'start', specs, map, difficulty: this.difficulty });
   }
 
-  /** Latest input for a guest's panda. Dash and firecracker presses are handed out only once; a guest gone quiet stands still. */
+  /** Latest input for a guest's panda. Dash, firecracker and switch presses are handed out only once; a guest gone quiet stands still. */
   inputFor(id: string): PlayerInput | undefined {
     const i = this.inputs.get(id);
     if (!i) return undefined;
     if (performance.now() - (this.inputAt.get(id) ?? 0) > INPUT_STALE_MS) return { ...NO_INPUT };
-    if (i.dash || i.cracker) this.inputs.set(id, { ...i, dash: false, cracker: false });
+    if (i.dash || i.cracker || i.swap) this.inputs.set(id, { ...i, dash: false, cracker: false, swap: false });
     return i;
   }
 
@@ -187,10 +187,11 @@ export class NetHost {
       const seat = this.seats.get(r.id);
       if (!seat) return;
       const input = decodeInput(msg.i);
-      // Keep unconsumed dash / firecracker presses until the simulation has seen them.
+      // Keep unconsumed dash / firecracker / switch presses until the simulation has seen them.
       const prev = this.inputs.get(seat);
       if (prev?.dash) input.dash = true;
       if (prev?.cracker) input.cracker = true;
+      if (prev?.swap) input.swap = true;
       this.inputs.set(seat, input);
       this.inputAt.set(seat, performance.now());
     } else if (msg.t === 'end' && r.id && r.inMatch && this.inGame) {

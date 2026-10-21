@@ -1,5 +1,5 @@
 import { NET_INTERP_TICKS, SIM_HZ } from '../config';
-import type { PlayerInput, PlayerSpec, Snapshot } from '../sim/types';
+import { NO_INPUT, type PlayerInput, type PlayerSpec, type Snapshot } from '../sim/types';
 import { Presenter } from './Presenter';
 import type { GameContext, Session } from './Session';
 
@@ -24,7 +24,7 @@ export class RemoteGame implements Session {
   private renderTick = -1;
   private ended = false;
   private sendTimer = 0;
-  private pending: PlayerInput = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false };
+  private pending: PlayerInput = { ...NO_INPUT };
 
   constructor(
     private readonly ctx: GameContext,
@@ -93,7 +93,9 @@ export class RemoteGame implements Session {
 
     renderer.updateGame(this.ended ? 0 : dt, a, b, alpha, this.localId);
     hud.update(latest, fps);
-    this.ctx.input.setCrackerCount(latest.survivors.find((s) => s.id === this.localId)?.crackers ?? 0);
+    const me = latest.survivors.find((s) => s.id === this.localId);
+    this.ctx.input.setCrackerCount(me?.crackers ?? 0);
+    this.ctx.input.setOtherWeapon(me?.state === 'active' ? me.other : null);
   }
 
   dispose(): void {
@@ -113,11 +115,12 @@ export class RemoteGame implements Session {
     p.attack ||= i.attack;
     p.dash ||= i.dash;
     p.cracker ||= i.cracker;
+    p.swap ||= i.swap;
 
     this.sendTimer += dt;
     if (this.sendTimer < INPUT_SEND_INTERVAL) return;
     this.sendTimer = 0;
     this.link.sendInput(p);
-    this.pending = { mx: p.mx, mz: p.mz, ax: 0, az: 0, attack: false, dash: false, cracker: false };
+    this.pending = { ...NO_INPUT, mx: p.mx, mz: p.mz };
   }
 }

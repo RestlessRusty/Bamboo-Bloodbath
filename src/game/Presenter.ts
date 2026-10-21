@@ -114,6 +114,9 @@ export class Presenter {
         case 'grab':
           sfx.play('pickup', posOf(ev.id), 0.6);
           break;
+        case 'draw':
+          if (mine(ev.id)) sfx.play('pickup', posOf(ev.id), 0.35);
+          break;
         case 'splash':
           sfx.play('splash', ev, 0.7);
           renderer.effects.splash(ev.x, WATER_LEVEL, ev.z);

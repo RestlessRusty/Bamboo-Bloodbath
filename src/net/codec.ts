@@ -71,6 +71,7 @@ export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
       r2(v.hurt),
       v.kills,
       v.crackers,
+      v.other ? WEAPON_TYPES.indexOf(v.other) : -1,
     ]),
     z: s.zombies.map((v) => [
       v.id,
@@ -89,7 +90,7 @@ export function encodeSnapshot(s: Snapshot): EncodedSnapshot {
     c: s.crackers.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z), v.flying ? 1 : 0]),
     d: s.crackerDrops.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z)]),
     b: bamboo,
-    rk: s.racks.map((w) => WEAPON_TYPES.indexOf(w)),
+    rk: s.racks.map((w) => (w ? WEAPON_TYPES.indexOf(w) : -1)),
     e: s.events,
   };
 }
@@ -115,6 +116,7 @@ export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
     hurt: n(a[14]),
     kills: n(a[15]),
     crackers: n(a[16]),
+    other: WEAPON_TYPES[n(a[17])] ?? null,
   }));
   const zombies: ZombieSnap[] = (e.z ?? []).map((a) => ({
     id: n(a[0]),
@@ -153,7 +155,7 @@ export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
     crackers,
     crackerDrops,
     bamboo,
-    racks: (e.rk ?? []).map((w) => WEAPON_TYPES[w] ?? 'knife'),
+    racks: (e.rk ?? []).map((w) => WEAPON_TYPES[w] ?? null),
     events: Array.isArray(e.e) ? e.e : [],
   };
 }

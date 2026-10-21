@@ -2,6 +2,7 @@ import { CRACKER, JAVELIN, NOISE } from '../config';
 import type { BambooSpot, Cracker, CrackerDrop, Javelin, Survivor, Zombie } from './entities';
 import type { GameMap } from './gameMap';
 import type { PlayerInput } from './types';
+import { hasJavelins, stowed } from './weapons';
 
 /** What a bot is allowed to look at. Implemented by Simulation. */
 export interface BotWorld {
@@ -25,6 +26,11 @@ export interface Brain {
 
 /** Which side of the leader each bot buddy walks on. */
 const SLOT_SIDE = [-1, 1, 0, 1];
+
+/** A bot with javelins in the other slot switches to them for zombies further than this… */
+const SWITCH_FAR = 6;
+/** …and back to its melee weapon when one gets this close (the gap stops it flip-flopping). */
+const SWITCH_CLOSE = 3;
 
 const BOT_NAMES = ['Bao', 'Mochi', 'Dumpling', 'Lychee', 'Tofu', 'Noodle', 'Sesame', 'Wonton', 'Boba', 'Kiwi'];
 
@@ -128,7 +134,7 @@ export class BotBrain implements Brain {
   constructor(private readonly slot: number) {}
 
   think(me: Survivor, w: BotWorld, dt: number): PlayerInput {
-    const out: PlayerInput = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false };
+    const out: PlayerInput = { mx: 0, mz: 0, ax: 0, az: 0, attack: false, dash: false, cracker: false, swap: false };
 
     let threat: Zombie | null = null;
     let td = Infinity;
@@ -152,6 +158,14 @@ export class BotBrain implements Brain {
         td = d;
         threat = z;
       }
+    }
+
+    // Two weapons: javelins for zombies still a way off, the melee weapon once they're close.
+    const other = stowed(me);
+    if (other && me.attackTime < 0 && threat) {
+      const javelinsReady = me.ammo > 0;
+      if (me.weapon === 'javelin' && td < SWITCH_CLOSE) out.swap = true;
+      else if (other === 'javelin' && javelinsReady && td > SWITCH_FAR && td < 11) out.swap = true;
     }
 
     const canThrow = me.weapon === 'javelin' && me.ammo > 0;
@@ -182,7 +196,7 @@ export class BotBrain implements Brain {
 
     const downed = nearest(w.survivors.filter((s) => s !== me && s.state === 'downed'), me, 30);
     const snack = me.hp < 55 ? nearest(w.bamboo.filter((b) => b.active), me, 20) : null;
-    const spear = me.weapon === 'javelin' && me.ammo < JAVELIN.ammo ? nearest(w.javelins.filter((j) => !j.flying), me, 14) : null;
+    const spear = hasJavelins(me) && me.ammo < JAVELIN.ammo ? nearest(w.javelins.filter((j) => !j.flying), me, 14) : null;
     const loot = me.crackers < CRACKER.max ? nearest(w.crackerDrops, me, 10) : null;
     const leader = nearest(w.survivors.filter((s) => !s.spec.bot && s.state === 'active'), me, Infinity);
     // Story escort: stick by the cart (and keep it rolling) unless the leader wandered off.

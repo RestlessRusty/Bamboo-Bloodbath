@@ -22,9 +22,21 @@ export interface WeaponDef extends MeleeDef {
 export const WEAPONS: Record<WeaponType, WeaponDef> = {
   knife: { label: 'Knife', damage: 20, range: 1.5, arc: 1.9, knockback: 3, stun: 0.2, hitAt: 0.11, duration: 0.3, cooldown: 0.34 },
   axe: { label: 'Axe', damage: 45, range: 1.9, arc: 2.4, knockback: 9, stun: 0.6, hitAt: 0.3, duration: 0.6, cooldown: 0.75 },
-  // Melee stats unused while carrying javelins (they get thrown); see PAW for the empty-handed slap.
+  // Melee stats unused while carrying javelins (they get thrown, see JAVELIN); see PAW for the empty-handed slap.
   javelin: { label: 'Javelin', damage: 35, range: 1.3, arc: 1.6, knockback: 6, stun: 0.4, hitAt: 0.2, duration: 0.45, cooldown: 0.55 },
 };
 
-/** Bare-paw slap when a javelin panda has thrown everything. */
-export const PAW: MeleeDef = { damage: 8, range: 1.3, arc: 1.6, knockback: 2, stun: 0.15 };
+/** Bare-paw slap when a javelin panda has thrown everything and has no other weapon. */
+export const PAW: MeleeDef = { damage: 15, range: 1.3, arc: 1.6, knockback: 2, stun: 0.15 };
+
+/** Seconds after switching weapons before you can attack (no swapping mid-swing to skip a cooldown). */
+export const SWITCH_TIME = 0.3;
+
+/** The weapon in the slot you're not holding, or null with just the starting weapon. */
+export function stowed(s: { weapon: WeaponType; main: WeaponType; extra: WeaponType | null }): WeaponType | null {
+  return s.weapon === s.main ? s.extra : s.main;
+}
+
+export function hasJavelins(s: { main: WeaponType; extra: WeaponType | null }): boolean {
+  return s.main === 'javelin' || s.extra === 'javelin';
+}
