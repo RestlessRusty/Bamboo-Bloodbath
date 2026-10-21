@@ -7,6 +7,8 @@ while a horde of zombie pandas tries to eat them.
 Web app (Vite + TypeScript + Three.js + Rapier physics + PeerJS), hosted on GitHub Pages and
 installable on a phone's home screen. Can later be wrapped as an Android app.
 
+How the code fits together (for developers): [docs/developer-guide.md](docs/developer-guide.md).
+
 ## Run it
 
 Requires [Node.js](https://nodejs.org/) 20 or newer.
