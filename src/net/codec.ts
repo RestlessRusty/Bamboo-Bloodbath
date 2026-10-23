@@ -31,8 +31,14 @@ export interface EncodedSnapshot {
   c: number[][];
   /** Firecrackers lying around: [id, x, y, z]. */
   d: number[][];
-  /** Bamboo snacks as "1"/"0" per spot (any number of spots). */
+  /** Bamboo snacks as "1"/"0" per spot (any number of spots). Empty when `bn` is sent instead. */
   b: string;
+  /**
+   * Infinite mode (encoded around a guest's panda): only the snack spots within INTEREST_RANGE, as
+   * spot index + 1 when it has food and -(index + 1) when eaten. The guest keeps the last known state
+   * of every other spot (see decodeSnapshot).
+   */
+  bn?: number[];
   rk: number[];
   e: GameEvent[];
   /** Infinite mode only. */
@@ -63,6 +69,8 @@ const ZOMBIE_STATES: readonly ZombieState[] = ['walk', 'bite', 'lunge', 'stun', 
 /** Infinite mode: a guest only gets the zombies, javelins and firecrackers this close to their panda. */
 export const INTEREST_RANGE = 110;
 const INTEREST_R2 = INTEREST_RANGE * INTEREST_RANGE;
+/** Defensive cap on snack spot indices from the wire (the open world has a few hundred). */
+const MAX_SPOTS = 4096;
 
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -110,14 +118,26 @@ function decodeOpen(o: EncodedOpen): OpenSnap {
 /**
  * `near`: only zombies, javelins and firecrackers within INTEREST_RANGE of this point go in (infinite
  * mode encodes once per guest, around their panda: the world is too big to send everything to everyone).
- * Survivors always go in full.
+ * Survivors always go in full. With `spots` too (the map's bamboo snack spots, same order as
+ * Snapshot.bamboo), only the snack spots in range go in, as `bn`.
  */
-export function encodeSnapshot(s: Snapshot, near: { x: number; z: number } | null = null): EncodedSnapshot {
-  const bamboo = s.bamboo.map((on) => (on ? '1' : '0')).join('');
+export function encodeSnapshot(
+  s: Snapshot,
+  near: { x: number; z: number } | null = null,
+  spots: readonly { x: number; z: number }[] | null = null,
+): EncodedSnapshot {
   const p = near;
   const close: (v: { x: number; z: number }) => boolean = p
     ? (v) => (v.x - p.x) * (v.x - p.x) + (v.z - p.z) * (v.z - p.z) <= INTEREST_R2
     : () => true;
+  let bamboo = '';
+  let bambooNear: number[] | undefined;
+  if (p && spots && spots.length === s.bamboo.length) {
+    bambooNear = [];
+    for (let i = 0; i < spots.length; i++) if (close(spots[i])) bambooNear.push(s.bamboo[i] ? i + 1 : -(i + 1));
+  } else {
+    bamboo = s.bamboo.map((on) => (on ? '1' : '0')).join('');
+  }
   const zombies = p ? s.zombies.filter(close) : s.zombies;
   const javelins = p ? s.javelins.filter(close) : s.javelins;
   const crackers = p ? s.crackers.filter(close) : s.crackers;
@@ -165,13 +185,42 @@ export function encodeSnapshot(s: Snapshot, near: { x: number; z: number } | nul
     c: crackers.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z), v.flying ? 1 : 0]),
     d: crackerDrops.map((v) => [v.id, r2(v.x), r2(v.y), r2(v.z)]),
     b: bamboo,
+    bn: bambooNear,
     rk: s.racks.map((w) => (w ? WEAPON_TYPES.indexOf(w) : -1)),
     e: s.events,
     o: s.open ? encodeOpen(s.open) : undefined,
   };
 }
 
-export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
+/** Snapshot.bamboo from `b` (every spot) or `bn` (spots near us, merged into `known`). Defensive. */
+function decodeBamboo(e: EncodedSnapshot, known: boolean[] | null): boolean[] {
+  if (!Array.isArray(e.bn)) {
+    const full = Array.from(str(e.b), (c) => c === '1');
+    if (known) {
+      known.length = 0;
+      for (const on of full) known.push(on);
+    }
+    return full;
+  }
+  const into = known ?? [];
+  for (const v of e.bn as unknown[]) {
+    if (typeof v !== 'number' || !Number.isInteger(v) || v === 0) continue;
+    const i = Math.abs(v) - 1;
+    if (i >= MAX_SPOTS) continue;
+    while (into.length < i) into.push(true);
+    into[i] = v > 0;
+  }
+  return into.slice();
+}
+
+/**
+ * `known` (a guest's own, kept across snapshots and emptied for each new match): the last known state of
+ * every bamboo snack spot. Infinite-mode snapshots only carry the spots near our panda (`bn`); those update
+ * `known` and the rest keep what we last heard (spots never heard of count as having food). Full-length
+ * snapshots replace it. The result's bamboo is a copy of `known` then, as long as the highest spot heard of:
+ * RemoteGame pads it to the map's spot count.
+ */
+export function decodeSnapshot(e: EncodedSnapshot, known: boolean[] | null = null): Snapshot {
   const survivors: SurvivorSnap[] = (e.s ?? []).map((a) => ({
     id: str(a[0]),
     x: n(a[1]),
@@ -218,7 +267,7 @@ export function decodeSnapshot(e: EncodedSnapshot): Snapshot {
   }));
   const crackers: CrackerSnap[] = (e.c ?? []).map((a) => ({ id: n(a[0]), x: n(a[1]), y: n(a[2]), z: n(a[3]), flying: a[4] === 1 }));
   const crackerDrops: CrackerDropSnap[] = (e.d ?? []).map((a) => ({ id: n(a[0]), x: n(a[1]), y: n(a[2]), z: n(a[3]) }));
-  const bamboo = Array.from(str(e.b), (c) => c === '1');
+  const bamboo = decodeBamboo(e, known);
   return {
     tick: n(e.k),
     timeLeft: n(e.tl),

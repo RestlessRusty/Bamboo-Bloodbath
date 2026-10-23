@@ -7,7 +7,6 @@ import { WorldClock } from './clock';
 import { chunkOf, OPEN, PIECES, RECIPES, tileCenter, tileOf } from './config';
 import {
   addResources,
-  bagFits,
   bagResources,
   copyResources,
   drainHunger,
@@ -21,9 +20,11 @@ import {
   recipeBlocked,
 } from './economy';
 import { createHordeDirector } from './hordes';
+import { isBotSeat } from './save';
 import {
   canPlace,
   IN_THE_WAY,
+  isPlayers,
   isSolid,
   maxHp,
   placeCost,
@@ -62,6 +63,10 @@ import {
 
 /** Walk this close to a bed (its middle) to make it yours. */
 const BED_CLAIM = 1.6;
+/** Bots only claim beds this far past the edge of the main base (so following a player around doesn't move theirs). */
+const BOT_BED_PAD = 2;
+/** "Your pack is full" over a bag that won't go in: at most this often per panda (ticks). */
+const PACK_FULL_EVERY = 2 * SIM_HZ;
 /** Where pandas appear at the camp, in turn (metres east, south of its middle). */
 const CAMP_SPOTS: readonly [number, number][] = [
   [0, 0],
@@ -93,8 +98,11 @@ const HUNGRY_RESET = 5;
 /** Network and save numbers: 10 cm / 0.1 s is plenty. */
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-/** Saves keep humans by nickname (they come back under it), bots by id. */
-const keyOf = (spec: PlayerSpec) => (spec.bot ? spec.id : spec.name);
+/**
+ * Saves keep bot seats by id (whoever plays one right now: a guest may have taken it over) and humans by
+ * nickname (they come back under it). A nickname that looks like a seat id gets a '~', so it can't take a bot's entry.
+ */
+const keyOf = (spec: PlayerSpec) => (isBotSeat(spec.id) ? spec.id : isBotSeat(spec.name) ? `~${spec.name}` : spec.name);
 /** Tenths of full health, so a piece event goes out when a bite crosses one, not on every bite. */
 const hpBand = (hp: number, max: number) => Math.ceil((hp / max) * 10);
 const copyBag = (b: LootBag): LootBag => ({ ...b, res: copyResources(b.res) });
@@ -109,6 +117,10 @@ interface PandaState {
   bed: number;
   /** Told they're hungry (until they've eaten again). */
   warned: boolean;
+  /** Tick they were last told their pack is too full for a bag. */
+  fullAt: number;
+  /** A bot seat's own bot name (kept for the save while a guest plays it under theirs); null for everyone else. */
+  botName: string | null;
 }
 
 interface NodeState {
@@ -147,6 +159,11 @@ class Threats implements ThreatContext {
   lookouts(): { x: number; z: number }[] {
     return this.store.lookouts();
   }
+
+  /** Standing campfires: ambient zombies don't appear in their light at night (hordes.ts asks if it's there). */
+  campfires(): { x: number; z: number }[] {
+    return this.store.campfires();
+  }
 }
 
 /**
@@ -167,7 +184,7 @@ export class OpenRules implements OpenRulesApi {
   private readonly threats: Threats;
   private host: OpenHost | null = null;
   private readonly pandas = new Map<string, PandaState>();
-  /** Saved pandas (humans by nickname, bots by id), including the ones not in the world right now. */
+  /** Saved pandas (humans by nickname, bot seats by id: see keyOf), including the ones not in the world right now. */
   private readonly players: Record<string, PlayerSave> = {};
   private readonly nodes = new Map<number, NodeState>();
   private readonly crates = new Set<number>();
@@ -262,11 +279,17 @@ export class OpenRules implements OpenRulesApi {
   initSurvivor(s: Survivor): void {
     const st = freshState();
     const saved = this.players[keyOf(s.spec)];
+    // Remembered while the seat is still the bot's (it always is here; the save's name if a guest already has it).
+    if (isBotSeat(s.spec.id)) st.botName = !s.spec.bot && saved && saved.bot ? saved.name : s.spec.name;
     if (saved) {
       st.hunger = clamp(saved.hunger, 0, OPEN.hungerMax);
       st.pack = copyResources(saved.pack);
       const bed = this.store.get(saved.bed);
       st.bed = bed && bed.kind === 'bed' ? bed.id : -1;
+      // One owner per bed: if a panda in the world holds it now, it stays theirs.
+      for (const [id, o] of this.pandas) {
+        if (id !== s.spec.id && st.bed >= 0 && o.bed === st.bed) st.bed = -1;
+      }
       s.hp = clamp(saved.hp, 1, SURVIVOR.maxHp);
       // The main weapon is whatever they picked in the menu this time; the extra slot is what they carried.
       s.extra = saved.extra && saved.extra !== s.main ? saved.extra : null;
@@ -451,26 +474,40 @@ export class OpenRules implements OpenRulesApi {
     if (left || crackers > 0) this.dropBag(host, c.x, c.z, left ?? {}, crackers, '');
   }
 
-  /** Bags are taken whole when the pack has room for all of it; firecrackers up to the cap (the rest stay). */
+  /**
+   * A bag gives what fits in the pack, and firecrackers up to the cap; the rest stays in it. When nothing
+   * would go in, the panda hears their pack is full (now and then, not on every check).
+   */
   private lootBags(host: OpenHost, s: Survivor, st: PandaState): void {
     if (!this.bags.size) return;
     const r = OPEN.lootRadius;
+    let full = false;
     for (const b of this.bags.values()) {
       if (Math.abs(b.x - s.x) > r || Math.abs(b.z - s.z) > r || Math.hypot(b.x - s.x, b.z - s.z) > r) continue;
-      const hasRes = packTotal(b.res) > 0;
-      const crackerRoom = Math.max(0, CRACKER.max - s.crackers);
-      if (hasRes ? !bagFits(b, st.pack) : crackerRoom === 0) continue;
-      moveAll(b.res, st.pack);
-      const take = Math.min(b.crackers, crackerRoom);
-      s.crackers += take;
-      b.crackers -= take;
-      if (b.crackers > 0) {
+      const before = packTotal(b.res);
+      if (before > 0) {
+        const left = fillPack(st.pack, b.res);
+        for (const k of RESOURCE_KINDS) b.res[k] = left?.[k] ?? 0;
+      }
+      const took = before - packTotal(b.res);
+      const crackers = Math.max(0, Math.min(b.crackers, CRACKER.max - s.crackers));
+      s.crackers += crackers;
+      b.crackers -= crackers;
+      if (took <= 0 && crackers <= 0) {
+        if (before > 0) full = true;
+        continue;
+      }
+      if (b.crackers > 0 || packTotal(b.res) > 0) {
         host.emit({ e: 'bag', b: copyBag(b) });
       } else {
         this.bags.delete(b.id);
         host.emit({ e: 'unbag', id: b.id, by: s.spec.id });
       }
       return; // one a check is plenty
+    }
+    if (full && host.ticks - st.fullAt >= PACK_FULL_EVERY) {
+      st.fullAt = host.ticks;
+      host.emit({ e: 'deny', id: s.spec.id, why: 'Your pack is full' });
     }
   }
 
@@ -480,17 +517,36 @@ export class OpenRules implements OpenRulesApi {
     if (moveAll(st.pack, this.stash)) host.emit({ e: 'deposit', id: s.spec.id });
   }
 
-  /** Beds are personal: one another panda here has claimed stays theirs (but a player may take a bot's). */
+  /**
+   * Beds are personal: one another panda has claimed stays theirs, here or away (but a player may take a bot's).
+   * Only the players' beds can be claimed (not the abandoned buildings' own, until someone repairs one), and bots
+   * only claim beds at the main base.
+   */
   private claimBed(host: OpenHost, s: Survivor, st: PandaState): void {
-    const bed = this.store.nearestStanding('bed', s.x, s.z, BED_CLAIM);
+    const bed = this.store.nearestStanding('bed', s.x, s.z, BED_CLAIM, isPlayers);
     if (!bed || bed.id === st.bed) return;
+    if (s.spec.bot) {
+      const base = this.store.bases()[0];
+      if (!base || Math.hypot(tileCenter(bed.gx) - base.x, tileCenter(bed.gz) - base.z) > base.r + BOT_BED_PAD) return;
+    }
+    const mayTake = !s.spec.bot;
     for (const o of host.survivors) {
       if (o === s) continue;
       const os = this.pandas.get(o.spec.id);
-      if (!os || os.bed !== bed.id) continue;
-      if (s.spec.bot || !o.spec.bot) return;
-      os.bed = -1;
+      if (os && os.bed === bed.id && !(mayTake && o.spec.bot)) return;
     }
+    // Pandas away from the world keep theirs too (their saved entry; a bot seat's only against a player).
+    const away: PlayerSave[] = [];
+    for (const [k, p] of Object.entries(this.players)) {
+      if (p.bed !== bed.id || host.survivors.some((o) => !o.npc && keyOf(o.spec) === k)) continue;
+      if (!(mayTake && p.bot)) return;
+      away.push(p);
+    }
+    for (const o of host.survivors) {
+      const os = o === s ? undefined : this.pandas.get(o.spec.id);
+      if (os && os.bed === bed.id) os.bed = -1;
+    }
+    for (const p of away) p.bed = -1;
     st.bed = bed.id;
     host.emit({ e: 'bed', id: s.spec.id, bed: bed.id });
   }
@@ -583,9 +639,11 @@ export class OpenRules implements OpenRulesApi {
     this.director.onNoise(x, z, radius);
   }
 
+  /** Killed, or fell out of the world (still has hp): the director hears of both, only a kill counts or drops scrap. */
   onZombieDeath(z: Zombie): void {
-    this.kills++;
     this.director.onZombieDeath(z);
+    if (z.hp > 0) return;
+    this.kills++;
     if (z.siege && this.host && Math.random() < OPEN.siege.scrapChance) this.dropScrap(this.host, z.x, z.z);
   }
 
@@ -658,6 +716,8 @@ export class OpenRules implements OpenRulesApi {
     if (!pay(st.pack, this.stashFor(s), cost)) return 'Not enough materials';
     p.tier = (p.tier + 1) as Tier;
     p.hp = maxHp(p.kind, p.tier);
+    // A world piece someone has put work into is theirs now (and counts towards bases, beds, lookouts…).
+    if (p.owner === '') p.owner = s.spec.name;
     this.store.changed(p);
     this.emitPiece(host, p);
     host.emit({ e: 'built', id: s.spec.id, kind: p.kind, how: 'upgrade', x: tileCenter(p.gx), z: tileCenter(p.gz) });
@@ -675,6 +735,7 @@ export class OpenRules implements OpenRulesApi {
     if (!pay(st.pack, this.stashFor(s), cost)) return 'Not enough materials';
     p.hp = maxHp(p.kind, p.tier);
     p.ruined = false;
+    if (p.owner === '') p.owner = s.spec.name;
     this.store.changed(p);
     this.emitPiece(host, p);
     host.emit({ e: 'built', id: s.spec.id, kind: p.kind, how: 'repair', x: tileCenter(p.gx), z: tileCenter(p.gz) });
@@ -949,18 +1010,21 @@ export class OpenRules implements OpenRulesApi {
   private freeSpot(x: number, z: number): { x: number; z: number } | null {
     const half = this.world.size / 2 - 4;
     if (!Number.isFinite(x) || !Number.isFinite(z) || Math.abs(x) > half || Math.abs(z) > half) return null;
-    if (this.standable(tileOf(x), tileOf(z)) && !this.map.terrain.isWater(x, z)) return { x, z };
+    // Not on a bridge either: the body would appear on the ground under the deck.
+    const t = this.map.terrain;
+    if (this.standable(tileOf(x), tileOf(z)) && !t.isWater(x, z) && !t.onBridge(x, z)) return { x, z };
     return this.besideTile(tileOf(x), tileOf(z));
   }
 
-  /** The middle of a free, dry tile next to (gx, gz): the four sides first, then the corners. */
+  /** The middle of a free, dry tile next to (gx, gz), off walls and bridges: the four sides first, then the corners. */
   private besideTile(gx: number, gz: number): { x: number; z: number } | null {
+    const t = this.map.terrain;
     for (let k = 0; k < NEIGHBOURS.length; k += 2) {
       const tx = gx + NEIGHBOURS[k];
       const tz = gz + NEIGHBOURS[k + 1];
       const x = tileCenter(tx);
       const z = tileCenter(tz);
-      if (this.standable(tx, tz) && !this.map.terrain.isWater(x, z) && !this.map.terrain.isWall(x, z)) return { x, z };
+      if (this.standable(tx, tz) && !t.isWater(x, z) && !t.isWall(x, z) && !t.onBridge(x, z)) return { x, z };
     }
     return null;
   }
@@ -974,11 +1038,13 @@ export class OpenRules implements OpenRulesApi {
     // Downed when the world is saved: they'll be back on their feet at their bed (keeping their pack).
     const down = s.state !== 'active';
     const at = down ? this.respawnSpot(st) : s;
+    // A bot seat is saved as the bot's panda, under the bot's name, even while a guest plays it.
+    const seat = isBotSeat(s.spec.id);
     return {
-      name: s.spec.name,
+      name: seat ? (st.botName ?? s.spec.name) : s.spec.name,
       variant: s.spec.variant,
       weapon: s.main,
-      bot: s.spec.bot,
+      bot: seat,
       x: r1(at.x),
       z: r1(at.z),
       hp: down ? OPEN.respawnHp : Math.max(1, Math.ceil(s.hp)),
@@ -998,5 +1064,5 @@ export class OpenRules implements OpenRulesApi {
 const NEIGHBOURS: readonly number[] = [0, 1, 1, 0, 0, -1, -1, 0, 1, 1, -1, 1, 1, -1, -1, -1];
 
 function freshState(): PandaState {
-  return { hunger: OPEN.hungerMax, pack: emptyResources(), bed: -1, warned: false };
+  return { hunger: OPEN.hungerMax, pack: emptyResources(), bed: -1, warned: false, fullAt: -Infinity, botName: null };
 }

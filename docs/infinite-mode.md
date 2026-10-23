@@ -5,6 +5,15 @@ multiplayer (2–4 phones, the host runs the world). This document is the contra
 types are in `src/sim/open/types.ts`, the tuning numbers and piece/recipe tables in `src/sim/open/config.ts`.
 Treat both as fixed: you may *add* to them if you really must, but never rename or remove anything.
 
+## Status (23 Oct 2026)
+
+All seven modules are written. Four reviews checked them: compile and contract, flows and networking, gameplay
+logic, and rendering / UI / phone performance. Two fix rounds followed. **Nothing has been compiled or run yet.**
+This document has been brought in line with the final code: where the code differs from the first draft of the
+contract, the text below says what the code does. What was fixed and what comes next is in
+[infinite-mode-handoff.md](infinite-mode-handoff.md); how it all fits into the rest of the game is in section 8 of
+the [developer guide](developer-guide.md).
+
 Ground rules for everyone writing this code:
 - Nothing gets compiled or run (no npm, no tsc, no git). Read the code you call and match signatures exactly.
 - Match the surrounding style: small classes, doc comments in the same tone, `el()` + `data-act` / `data-ref`
@@ -36,12 +45,14 @@ At night more lone zombies are about, hordes move faster, and the renderer darke
 
 `OPEN.gatherPerHit` per swing, ×`gatherBonus` with the right tool (`OPEN.goodTool`). Gathering is loud
 (`gatherNoise`). Nodes run out and regrow after `nodeRegrow`. Crates give scrap, food, firecrackers, sometimes a
-weapon.
+weapon; what doesn't fit in the pack (or past the firecracker cap) is left in a bag at the crate.
 
 **Carrying and the stash.** Each panda carries a backpack (`packMax` units in total). Walking within `depositRadius`
 of a storage chest empties the pack into the team stash. Building and crafting use your pack first, then the stash
 when a storage chest is within `stashReach` of you. When you die, your pack is dropped as a loot bag where you fell;
-anyone can pick it up.
+anyone can pick it up. Bags are taken partially: walking over one takes what fits in your pack, and firecrackers up
+to the cap; the rest stays in the bag (a 'bag' event updates it). With nothing fitting, "Your pack is full" shows
+at most every 2 s.
 
 **Hunger.** 0..100, drains `hungerDrain`/s. Below `hungryAt` you're slower (`slowWhenHungry`) and the HUD nags. At 0
 you lose `starveDamage` HP/s down to `starveFloor`, never lower. Bamboo snacks (the existing snack spots) heal and
@@ -53,28 +64,36 @@ fill `bambooFood`. Bamboo stew (campfire) fills 60.
 - **spikes:** hurt zombies on the tile, wear out
 - **campfire:** cooking, light
 - **workbench:** crafting
-- **bed:** your respawn point; walking within 1.6 m claims it
+- **bed:** your respawn point; walking within 1.6 m claims it. A bed another panda has claimed stays theirs (a player may take a bot's), and bots only claim beds at the main base.
 - **storage:** the team stash
 - **lookout:** reveals hordes within `lookoutRange` on the map and adds `siege.lookoutWarn` seconds of warning
 
+**Only the players' pieces count.** A piece is the players' when a player built it, or when someone repaired or
+upgraded an abandoned building's piece. Repairing or upgrading a world piece (owner '') makes it the repairer's.
+Only these pieces make up bases (beds and storage), lookouts and campfires for the threats, and only such beds can
+be claimed (`isPlayers` in `structures.ts`). So an intact bed or chest in an abandoned building does nothing until
+it's demolished and rebuilt, or until it gets damaged and someone repairs it. Whether to add a "Claim" action
+instead is an open question (see the handoff).
+
 Rules for building:
 - **Placing** requires: the tile is free, dry, not on a ridge wall or a steep slope (>0.9 m height difference across the tile), not on a tree / rock / node / crate / POI clearing edge… The tile may be inside a POI. No panda or zombie may stand on it (sim only). It must be within `buildReach`, and you must be able to pay.
-- **Repairing** a damaged or ruined piece costs `repairShare` of its tier price, scaled by the damage. Ruined pieces cost the full share.
-- **Demolishing** returns `refundShare` of the price, but only for pieces you or the world own; anyone may demolish ruins.
+- **Repairing** a damaged or ruined piece costs `repairShare` of everything it's worth up to its tier, scaled by the damage. Ruined pieces cost the full share. Repair costs round up and refunds round down, so repairing and demolishing never makes a profit.
+- **Demolishing** returns `refundShare` of the price (rubble returns nothing), but only for pieces you or the world own; anyone may demolish ruins. A demolished bed is cleared from whoever had it.
 - Pieces lose HP to zombie bites (`ZOMBIE.biteDamage × OPEN.pieceBite`). At 0 HP a piece becomes rubble (`ruined`): passable and inert until repaired.
 
 **Crafting** (`RECIPES`): you stand within `craftReach` of a workbench or campfire. A crafted weapon goes into your
 extra slot like a weapon rack. Firecrackers are capped at `CRACKER.max`. Bandages heal right away.
 
 **Zombies.**
-- *Lone (ambient) zombies* wander near the pandas: `ambient.day`/`night` + `perPlayer` per panda, about half asleep. They spawn `spawnMin..spawnMax` m away out of sight and never within `campfireLight` of a campfire at night. They despawn beyond `ambient.despawn`.
-- *Roaming hordes* are abstract markers, `hordes.count` + `perDay`·(day-1), at most `max`, each with `sizeMin..sizeMax` zombies, drifting over the world. They head for loud noises they hear (`hearRange` × radius / `gatherNoise`). A horde becomes real zombies (goal = its marker, which keeps moving) when a panda is within `materialize`, and goes back to being a marker (count = survivors) when every panda is beyond `dematerialize`.
+- *Lone (ambient) zombies* wander near the pandas: `ambient.day`/`night` + `perPlayer` per panda, about half asleep. They spawn `spawnMin..spawnMax` m away out of sight, never in a base, and never within `campfireLight` of a players' campfire at night (`Threats.campfires()` in the rules, an extra beyond `ThreatContext`). They despawn beyond `ambient.despawn`.
+- *Roaming hordes* are abstract markers, `hordes.count` + `perDay`·(day-1), at most `max`, each with `sizeMin..sizeMax` zombies, drifting over the world. They head for loud noises they hear (`hearRange` × radius / `gatherNoise`). Footsteps and groans only wake sleepers and never reach the hordes, and hordes ignore any noise with a radius under 8 m. A horde becomes real zombies (goal = its marker, which keeps moving) when a panda is within `materialize`, and goes back to being a marker (count = survivors) when every panda is beyond `dematerialize`.
 - *Sieges* come at random times of day: the first between `firstMin..firstMax` days, then every `gapMin..gapMax` days.
   1. A warning event comes `warn` seconds ahead, plus `lookoutWarn` with a lookout standing.
   2. **Target:** the biggest base (cluster of beds + storage) if any panda is within `baseRange` of it, otherwise the nearest group of pandas.
   3. **Size:** (base + perDay·day + perPlayer·players) × difficulty horde, capped at `max`. Zombies arrive in waves within `zombiesMax` real zombies.
   4. Siege zombies hunt a bit further (sense ×1.5) and bite pieces in their way.
-  5. The siege is over when all its zombies are dead (`siegeOver` won) or after `giveUp` seconds. Killing siege zombies drops scrap (`scrapChance`).
+  5. The siege is over when all its zombies are dead (`siegeOver` won) or after `giveUp` seconds. Killing siege zombies drops scrap (`scrapChance`), into a world bag already lying within 3 m if there is one. A zombie that falls out of the world counts neither as a kill nor for scrap. Only zombies that aren't dying count against `zombiesMax`.
+  6. The 'siege' event's (x, z) is where the horde comes from, not where it arrives.
 
 **Death.** Downed pandas bleed `OPEN.bleedTime` (30 s); a friend can revive them normally meanwhile (DOWNED.reviveTime).
 When it runs out (or `aloneBleedTime` if nobody else is standing), the panda **respawns at their bed** (else the
@@ -83,8 +102,8 @@ turns into a zombie in this mode, and the world never ends.
 
 **Multiplayer.**
 - **Leash:** a human can't get further than `OPEN.leash` from the nearest other human; the HUD warns from `leashWarn`. The movement component away from them is removed. It only applies with 2+ humans, and bots don't count.
-- **Joining:** guests join the host's world any time (drop-in). A newcomer gets a new panda while there are fewer than 4, else takes over a bot, else is refused ("This world is full").
-- **Leaving:** a guest's panda leaves the world with them. Their state is kept in the save under their nickname, and they get it back when they come again.
+- **Joining:** guests join the host's world any time (drop-in). A newcomer gets a new panda while there are fewer than 4, else takes over a bot, else is refused ("This world is full", sent right after `hello`; the guest then goes back to the menu instead of retrying).
+- **Leaving:** a guest's own panda leaves the world with them. Their state is kept in the save under their nickname, and they get it back when they come again. A bot's panda they had taken over goes back to the bot. Players without a nickname get the session's `PandaNNN` stored as their nickname before they play, host or join, so they're recognised next time.
 - **Saving:** only the host saves (autosave every `OPEN.autosave` s, on pause, on "Save & quit", and when the page is hidden).
 
 **Score.** Days survived (best day kept in the save); kills.
@@ -154,7 +173,12 @@ Files: `src/sim/open/rules.ts`, `structures.ts`, `economy.ts`, `mirror.ts`, `sav
     - leash
     - bleed / respawn
     - `save` / `join`
-  - Survivors are keyed by `spec.id`; saves key humans by `spec.name` and bots by `spec.id`.
+  - Survivors are keyed by `spec.id`. Saves use `keyOf(spec)`:
+    - bot seats (`/^b\d+$/`, `isBotSeat` in `save.ts`) by id, even while a guest plays that panda. They're written with `bot: true` and the bot's own name, which `initSurvivor` remembers in the panda state (`botName`).
+    - humans by `spec.name`. A nickname that looks like a seat id is stored as `~b2`, so it can't overwrite a bot's entry.
+  - Bases, lookouts and campfires only count the players' pieces, and only such beds can be claimed (`isPlayers`: `poi < 0 || owner !== ''`). `upgrade` and `repair` set `owner` to the repairer's name when it was ''.
+  - `Threats` also has `campfires()` (the players' standing campfires, cached in `StructureStore.refresh()`), which `hordes.ts` uses when it's there.
+  - `onZombieDeath` always tells the director, but only counts a kill and rolls siege scrap when `z.hp <= 0` (not for a zombie that fell out of the world).
 - `structures.ts`: the `StructureStore` (pieces by id, occupancy by tile, bodies via `OpenHost.addPieceBody`, obstacle circles r ~1.15 for standing solid pieces) and the pure helpers used by sim and UI alike:
   - `export function canPlace(map: GameMap, pieceAt: (gx: number, gz: number) => Piece | undefined, kind: PieceKind, gx: number, gz: number): string | null` returns null when OK, else a short reason ("Too steep", "In the water", "Something's in the way", "Tile taken").
   - `export function placeCost(kind: PieceKind): Cost`, `upgradeCost(p: Piece): Cost | null` (null at max tier / not upgradable), `repairCost(p: Piece): Cost | null` (null when at full HP), `maxHp(kind: PieceKind, tier: Tier): number`.
@@ -213,7 +237,7 @@ Files: `src/sim/Simulation.ts`, `src/sim/bots.ts`, `src/sim/steering.ts`, `src/s
     - with no target and no lure but `z.goal`: walk to the goal at `ZOMBIE.speed × speedMul × 0.8` (siege: full speed), wander when within 3 m of it
     - before steering, when the zombie is moving purposefully (target or goal, not lunging, not via a crossing), `open.blockingPiece(z, dirX, dirZ)`: if a piece comes back, start a 'bite' with `z.piece = id`; at the bite moment call `open.damagePiece(this, id, ZOMBIE.biteDamage × zombieDamage × OPEN.pieceBite)` instead of hurting a survivor; clear `z.piece` after
     - `pickTarget` sense ×1.5 for siege zombies
-    - `noise()` is public and also calls `open.onNoise(x, z, radius)`
+    - `noise()` is public and also calls `open.onNoise(x, z, radius)`. Footsteps and groans go through the private `wake()` only, so walking never calls the hordes over.
     - `damageZombie` kills call `open.onZombieDeath(z)`
   - **Snacks:** bamboo snacks are eaten when `s.hp < max || open.wantsFood(s)`; then `open.ate(s)` is called too.
   - `checkEnd()` never ends an open match. `afterSurvivor` falling through the world puts them at `open.spawnPoint(spec)`.
@@ -231,17 +255,17 @@ Files: `src/sim/Simulation.ts`, `src/sim/bots.ts`, `src/sim/steering.ts`, `src/s
 Files: `src/render/Renderer.ts`, new files under `src/render/open/`, plus small changes to `nameTag.ts`, `effects.ts`, `pickups.ts`, `world.ts` (exporting helpers / geometry builders for reuse).
 
 - `Renderer.setMap(map)`: with `map.open`, the world is an `OpenWorldView` (`render/open/OpenWorldView.ts`, same `WorldView`-ish surface: `group`, `update(dt, time, focusX, focusZ)`) instead of `buildWorld`:
-  - **Chunk streaming:** chunks within ~170 m of the focus; build at most one chunk per frame; dispose chunks beyond ~230 m, cached by key.
+  - **Chunk streaming:** chunks within `LOAD` = 110 m of the focus, nearest first, at most one per frame (everything within `PRIME` = 48 m at once on the first frame); chunks beyond `DROP` = 150 m are disposed (checked every 30 frames). The camera never sees much past 50 m, and the far plane (`OPEN_FAR`) and fog hide the edge. (The first draft said ~170 / 230 m.)
   - **Per chunk:** terrain mesh (~1.6–2 m cells, vertex colours from biome-weighted palettes, the same toon look), its water (ponds/rivers clipped to the chunk, or a water plane where any vertex is below water), its trees / rocks / stones / stalks / groves / scrap piles instanced, and decor from `chunkDecor`.
   - Bridges / fords globally (like `buildCrossings`).
   - The spawn camp (reuse `buildCamp` if workable).
 - `PickupsView(map)` works unchanged for bamboo snacks (the world's `bambooSpots`), but must not create hundreds of separate meshes: check it and instance if needed.
-- **New:**
+- **New on `Renderer`** (forwarded to the `OpenWorldView`; both are kept across `setMap`, and a mirror is only used for the world with the same seed):
   - `setOpenMirror(m: WorldMirror | null): void`: pieces (per chunk groups rebuilt from `takeDirty()`; walls/gates by tier with bamboo/wood/stone looks, rubble for ruined, damage darkening), depleted nodes (stumps / pebbles / cut groves instead of the full prop: nodes of a chunk hide their prop instance when depleted), crates (closed / open), loot bags.
   - `setGhost(g: GhostSpec | null): void`: a translucent green/red piece on its tile.
 - **Day and night:** from `curr.open.time`, `night`:
   - lerp sky, fog, hemisphere and sun between the biome theme under the focus (from `biomeWeights`, smoothed) and a night palette
-  - campfires get small warm point lights (nearest 4, flickering)
+  - campfires get small warm point lights (nearest 4, flickering, all on or off together). The renderer compiles the lit shader variants when the match starts (`OpenWorldView.withLightsOn`), so the first dusk doesn't stutter.
   - snowfall only while the focus is in snow
 - **Name tags:** use `OPEN.bleedTime` instead of `DOWNED.bleedTime` for the downed bar when `curr.open` is set. Effects keep using `map.terrain`.
 - Camera unchanged; fog/far plane hide the streaming edge.
@@ -268,6 +292,9 @@ Files: `src/ui/Menu.ts`, `src/ui/InfiniteMenu.ts` (new), `src/ui/OpenHud.ts` (ne
   - `stop(): void`
   - `update(snap: Snapshot): void` (called every frame by the session)
   - `readonly building: boolean`
+  - `key(k: BuildKey): void`: the build keys from `InputManager.onBuildKey` (main.ts wires them)
+  - `deny(why: string): boolean`: shows a refusal; false when the same one went up less than 1.5 s ago, so the Presenter skips its buzz
+  - `gained(r: ResourceKind, n: number): void`: the "+2" floater on the pack chip, adding up quick hits
   - Handlers:
     ```ts
     interface OpenHudHandlers {
@@ -290,12 +317,12 @@ Files: `src/ui/Menu.ts`, `src/ui/InfiniteMenu.ts` (new), `src/ui/OpenHud.ts` (ne
     - Rotate, Place, Exit
     - when the target tile holds a piece: Upgrade / Repair / Demolish with costs
   - **Craft button**, shown within `craftReach` of a workbench or campfire (from the mirror) → panel of that station's recipes.
-  - Keyboard: B build mode, R rotate (build mode), Space / Enter place, Q demolish… pick sensible keys that don't clash with InputManager's, and list them in How to play.
+  - Keyboard (as built, listed in How to play): B build mode, 1–8 pick a piece (and enter build mode), R rotate, Space / Enter place or upgrade / repair the piece on the tile, X / Delete demolish, F craft. R, Space / Enter and X only act in build mode. M stays the big map. No gamepad build controls.
 - `Hud`: with an open map (`setMap(map)` sees `map.open`):
   - the timer shows nothing (the day chip is in OpenHud)
-  - the goal arrow points to the siege target during a siege, else to `mirror.baseCenter()`, else to the spawn (the HUD can get the mirror through a new `setOpenMirror(m: WorldMirror | null)`)
+  - the goal arrow points to the siege target during a siege, else to `mirror.baseCenter()`, else to the spawn (the HUD gets the mirror through `setOpenMirror(m: WorldMirror | null, guest = false)`, which also passes it on to the minimap)
   - the "End match" button never shows
-  - the pause card says "The world is saved when you leave" and its quit button reads "Save & quit" (host / solo) or "Leave world" (guest)
+  - the pause card says "The world is saved when you leave" and its quit button reads "Save & quit" (host / solo) or "Leave world" (`guest` true: RemoteGame passes it)
 - `HudMap` in open mode:
   - the small map shows ~240 m around the local panda (rotate not needed, north up)
   - the big map shows the whole world
@@ -304,10 +331,11 @@ Files: `src/ui/Menu.ts`, `src/ui/InfiniteMenu.ts` (new), `src/ui/OpenHud.ts` (ne
 - `Lobby`: `RoomView` gains `mode: RoomMode` and `world: { name: string; day: number } | null`; `LobbyHandlers` gain `onMode(mode: RoomMode): void` and `onWorld(dir: number): void` (host cycles saved worlds). With mode 'open', map / bots pickers hide (the world decides) and the world line shows.
 - `InputManager`:
   - `setBuildMode(on: boolean)` hides attack / dash / firecracker / switch buttons and makes `sample()` report no attack / cracker / swap while building (movement stays)
-  - the keys above, with callbacks for OpenHud: `onBuildKey?: (key: 'toggle' | 'rotate' | 'place' | 'demolish' | 'craft' | number) => void`
-- `Presenter`: handle every new event:
+  - the keys above, with callbacks for OpenHud: `onBuildKey?: (key: BuildKey) => void`, where `BuildKey = 'toggle' | 'rotate' | 'place' | 'demolish' | 'craft' | number`
+- `Presenter`: reaches the open HUD through `PresentContext.openHud?: OpenHud` (`GameContext` extends `PresentContext`). It handles every new event:
   - sounds (new Sfx sounds: build, gather by resource, chomp, smash, crafted, deposit, deny, siege horn, dawn / dusk stingers)
-  - effects (dust on build, sparks / chips on gather, debris on smash)
+  - effects (dust on build, `Effects.chips()` on gather, `Effects.debris()` on smash)
+  - a repeated `bag` event for a bag it already knows is silent; `unbag` with `by: ''` (the world tidying up) is ignored
   - HUD flashes ("Siege incoming from the north-east in 75 s!", "Day 4", "You're hungry", "Respawned at your bed", "<Name> picked up your bag", gather "+2 wood" floaters can be simple flashes for the local player only, rate-limited)
   - 'turned' no longer happens in open mode
 - `HowToPlay`: a short "Infinite" section plus the new keys.
@@ -322,20 +350,23 @@ Files: `src/net/protocol.ts`, `src/net/codec.ts`, `src/net/NetHost.ts`, `src/net
   - `'start'` adds `open?: WorldJoin` (set in open mode).
   - In open mode a mid-world `'start'` always has `you` and `open`.
 - **Codec:** `EncodedSnapshot.o?` carries `OpenSnap` compactly (rounded). Events go through as they are.
-  - **Per-guest interest:** in open mode `NetHost.sendSnapshot` encodes per guest, keeping only zombies / javelins / crackers / cracker drops within 110 m of that guest's panda (all survivors always).
+  - **Per-guest interest:** `encodeSnapshot(s, near = null, spots = null)`. In open mode `NetHost.sendSnapshot` encodes per guest with `near` = that guest's panda and `spots` = the world's bamboo snack spots. It keeps only zombies / javelins / crackers / cracker drops within `INTEREST_RANGE` = 110 m (all survivors always).
+  - With `spots`, the snack spots go as `bn`, only those within range, as signed 1-based indices (+i: has food, -i: eaten), instead of the full `b` string. `decodeSnapshot` merges them into what the guest already knows, and RemoteGame pads the list to the world's spot count (unknown spots count as having food).
 - **NetHost:** `mode: RoomMode`, `world: WorldSlotInfo | null`, `setMode(mode)`, `setWorld(info)`.
-  - In open mode, `joinMatch` takes a new seat for a newcomer while there are fewer than `MAX_PLAYERS` pandas; this needs `MatchSeats.addSeat(spec): boolean`, implemented by LocalGame. Otherwise it takes over a bot (`freeBotSeat`), else rejects.
-  - A guest who leaves mid-world calls `MatchSeats.removeSeat(id)` (their panda leaves; LocalGame → `sim.removeSurvivor`).
+  - In open mode, `joinMatch` takes a new seat for a newcomer while there are fewer than `MAX_PLAYERS` pandas; this needs `MatchSeats.addSeat(spec): boolean`, implemented by LocalGame. Otherwise it takes over a bot (`freeBotSeat`), else rejects. `hello` already rejects with "This world is full." when neither is possible.
+  - The mid-world `start` gets its `open` from `MatchSeats.joinWorld(): WorldJoin | null` (LocalGame → `sim.joinWorld()`; null outside open mode).
+  - A guest who leaves mid-world calls `MatchSeats.removeSeat(id)` for their own panda (it leaves; LocalGame → `sim.removeSurvivor`). A bot's panda they had taken over goes back to the bot under its old name instead. Either way they're taken off the room's player list.
   - `'cmd'` messages go to `onCommand: ((seat: string, cmd: OpenCommand) => void) | null`.
   - `start(specs, map, open?)`.
 - **Session:**
-  - `command(cmd: OpenCommand): void` (LocalGame: `sim.command(localId, cmd)`; RemoteGame: sends `'cmd'`; quick play / story ignore).
-  - `GameContext` gains `openHud?: OpenHud`.
+  - `command(cmd: OpenCommand): void` (LocalGame: `sim.command(localId, cmd)`; RemoteGame: sends `'cmd'` through `ClientLink.sendCommand`; quick play / story ignore).
+  - LocalGame overloads it: `command(cmd)` for the local player and `command(id, cmd)` for the guest playing panda `id` (main.ts wires `NetHost.onCommand` to it).
+  - `GameContext` gains `openHud?: OpenHud` (declared on `PresentContext` too, for the Presenter).
 - **LocalGame:**
   - With `options.open`, it creates the `WorldMirror` from `sim.joinWorld()`, calls `renderer.setOpenMirror` and `ctx.openHud.start`, applies each snapshot's events to the mirror (before presenting), and calls `openHud.update(curr)` every frame and `hud.setOpenMirror`.
   - `saveWorld(now)` passes through; `addSeat(spec)` / `removeSeat(id)` / `command(id, cmd)` for guests (host).
   - Paused in solo means the world is paused. On dispose, clear the mirror from renderer, HUD and openHud.
-- **RemoteGame:** the same mirror handling from the `start` message's `open` join, applying events of every received snapshot in order.
+- **RemoteGame:** `constructor(ctx, specs, localId, onEnd, link, open: WorldJoin | null = null)`. The extra last parameter is the `start` message's `open` join. It does the same mirror handling, applying the events of every received snapshot in order (even ones too late to draw), and calls `hud.setOpenMirror(mirror, true)`.
 - **maps.ts:** `loadMap({ id: OPEN_MAP_ID, seed })` builds `createOpenWorld(seed)` (cached like the others; the open world counts as one cache entry; never preview it in the menu).
 - **main.ts:**
   - **Infinite menu:**

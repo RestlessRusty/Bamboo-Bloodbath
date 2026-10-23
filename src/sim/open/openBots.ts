@@ -20,6 +20,9 @@ const LEADER_FAR = 40;
 const EAT_BELOW = OPEN.hungryAt;
 const SNACK_RANGE = 45;
 const SNACK_RANGE_FAR = 25;
+/** BotBrain goes to heal at a snack below this hp, this close (as in bots.ts). */
+const HEAL_BELOW = 55;
+const HEAL_RANGE = 20;
 /** Defend the base in a siege while the leader is this close to it. */
 const DEFEND_RANGE = 80;
 /** Empty the pack once it's this full and a storage chest is this close. */
@@ -80,6 +83,9 @@ class OpenBot implements Brain {
   private base: { x: number; z: number; r: number } | null = null;
   private snack: BambooSpot | null = null;
   private snackI = -1;
+  /** A snack BotBrain would heal at (see watchHeal), and seconds to its next look. */
+  private heal: BambooSpot | null = null;
+  private healT = 0;
   private store: Piece | null = null;
   private node: ResourceNode | null = null;
   private readonly skip = new Map<number, number>();
@@ -124,6 +130,7 @@ class OpenBot implements Brain {
         threat = z;
       }
     }
+    this.watchHeal(me, w, dt);
     if (this.innerBusy(me, w, threat, td)) {
       this.gate = null;
       this.goalKey = -1;
@@ -247,15 +254,41 @@ class OpenBot implements Brain {
     return out;
   }
 
+  /**
+   * Keeps `heal` on an uneaten snack BotBrain would go for to heal (it does below HEAL_BELOW hp, within
+   * HEAL_RANGE). The open world has hundreds of spots, so they're only looked through every SEARCH_EVERY,
+   * or straight away once the one we had is eaten.
+   */
+  private watchHeal(me: Survivor, w: BotWorld, dt: number): void {
+    if (me.hp >= HEAL_BELOW) {
+      this.heal = null;
+      this.healT = 0;
+      return;
+    }
+    if (this.heal && !this.heal.active) this.healT = 0;
+    this.healT -= dt;
+    if (this.healT > 0) return;
+    this.healT = SEARCH_EVERY;
+    this.heal = null;
+    let bestD = HEAL_RANGE;
+    for (const b of w.bamboo) {
+      if (!b.active) continue;
+      const d = Math.hypot(b.x - me.x, b.z - me.z);
+      if (d < bestD) {
+        bestD = d;
+        this.heal = b;
+      }
+    }
+  }
+
   /** BotBrain's own priorities above following the leader: when one of them applies, let it drive. */
   private innerBusy(me: Survivor, w: BotWorld, threat: Zombie | null, td: number): boolean {
     if (threat && td < 4) return true; // fighting up close, or fleeing
     for (const s of w.survivors) {
       if (s !== me && s.state === 'downed' && Math.hypot(s.x - me.x, s.z - me.z) < 30) return true;
     }
-    if (me.hp < 55) {
-      for (const b of w.bamboo) if (b.active && Math.hypot(b.x - me.x, b.z - me.z) < 20) return true;
-    }
+    const heal = this.heal;
+    if (heal && heal.active && Math.hypot(heal.x - me.x, heal.z - me.z) < HEAL_RANGE) return true;
     if (hasJavelins(me) && me.ammo < JAVELIN.ammo) {
       for (const j of w.javelins) if (!j.flying && Math.hypot(j.x - me.x, j.z - me.z) < 14) return true;
     }

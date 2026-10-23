@@ -35,6 +35,8 @@ export class RemoteGame implements Session {
   /** Ids of the pandas we have models for (infinite mode: pandas come and go with their players). */
   private ids: string[];
   private readonly mirror: WorldMirror | null = null;
+  /** Infinite mode: the world's bamboo snack spot count (snapshots only bring the spots near us). */
+  private readonly snackCount: number = 0;
 
   constructor(
     private readonly ctx: GameContext,
@@ -51,6 +53,7 @@ export class RemoteGame implements Session {
     if (open) {
       const map = ctx.renderer.currentMap;
       this.mirror = new WorldMirror(map, open);
+      this.snackCount = map.props.bambooSpots.length;
       ctx.renderer.setOpenMirror(this.mirror);
       ctx.hud.setOpenMirror(this.mirror, true);
       ctx.openHud?.start(map, this.mirror, localId);
@@ -83,9 +86,15 @@ export class RemoteGame implements Session {
     if (this.mirror && !this.ended) this.link.sendCommand(cmd);
   }
 
-  receive(snap: Snapshot): void {
+  receive(incoming: Snapshot): void {
     // Every snapshot's world events count, even one too late to draw: the mirror must not miss a change.
-    this.mirror?.apply(snap.events);
+    this.mirror?.apply(incoming.events);
+    // Infinite mode: one entry per snack spot, as the renderer expects (spots we never heard of have food).
+    const n = this.snackCount;
+    const snap =
+      this.mirror && incoming.bamboo.length !== n
+        ? { ...incoming, bamboo: Array.from({ length: n }, (_, i) => incoming.bamboo[i] ?? true) }
+        : incoming;
     const last = this.buffer[this.buffer.length - 1];
     if (last && snap.tick <= last.tick) return;
     this.buffer.push(snap);

@@ -139,6 +139,9 @@ export class Menu {
 
   show(message = ''): void {
     this.ref('toast').textContent = message;
+    // A fallback nickname may have been saved since (the first game that needed one).
+    const name = this.ref<HTMLInputElement>('name');
+    if (document.activeElement !== name && name.value !== this.settings.nickname) name.value = this.settings.nickname;
     this.refresh();
     this.el.hidden = false;
   }

@@ -1,5 +1,6 @@
 import type { DataConnection, Peer } from 'peerjs';
 import { MAX_PLAYERS, type Difficulty } from '../config';
+import { loadMap } from '../game/maps';
 import type { MapRef } from '../sim/mapLayout';
 import { OPEN } from '../sim/open/config';
 import type { OpenCommand, RoomMode, WorldJoin, WorldSlotInfo } from '../sim/open/types';
@@ -87,6 +88,8 @@ export class NetHost {
   private readonly inputAt = new Map<string, number>();
   /** `open`: an infinite-mode world. */
   private match: { specs: PlayerSpec[]; map: MapRef; open: boolean } | null = null;
+  /** Infinite mode: the world's bamboo snack spots, so each guest only gets the ones near their panda. */
+  private snackSpots: readonly { x: number; z: number }[] | null = null;
   /** Player id → the panda they play this match. */
   private readonly seats = new Map<string, string>();
   /** Seat ticket → player id, to recognise a guest coming back. */
@@ -168,6 +171,8 @@ export class NetHost {
     this.inputs.clear();
     this.inputAt.clear();
     this.match = { specs: specs.map((s) => ({ ...s })), map, open: !!open };
+    // The host has just built this map, so this is the cached one.
+    this.snackSpots = open ? loadMap(map).props.bambooSpots : null;
     this.seats.clear();
     this.botNames.clear();
     for (const p of this.players) if (p.id !== 'p1') this.seats.set(p.id, p.id);
@@ -194,7 +199,7 @@ export class NetHost {
       if (!r.id || !r.inMatch) continue;
       const seat = this.seats.get(r.id);
       const me = seat ? snap.survivors.find((s) => s.id === seat) : undefined;
-      this.send(r, { t: 'snap', s: encodeSnapshot(snap, me ?? null) });
+      this.send(r, { t: 'snap', s: encodeSnapshot(snap, me ?? null, this.snackSpots) });
     }
   }
 
@@ -203,6 +208,7 @@ export class NetHost {
     this.inGame = false;
     this.game = null;
     this.match = null;
+    this.snackSpots = null;
     this.seats.clear();
     this.botNames.clear();
     this.inputs.clear();

@@ -104,6 +104,8 @@ export class PieceKit {
 }
 
 interface Gate {
+  /** The gate piece's id. */
+  id: number;
   batch: Batch;
   index: number;
   x: number;
@@ -113,10 +115,22 @@ interface Gate {
   open: number;
 }
 
+/** What a piece was last built as, and where its instances went (so damage only retints them). */
+interface Slot {
+  look: LookId;
+  rot: number;
+  gx: number;
+  gz: number;
+  body: Batch;
+  index: number;
+  gate: Gate | null;
+}
+
 const tmpM = new THREE.Matrix4();
 const tmpHinge = new THREE.Matrix4();
 const tmpS = new THREE.Vector3();
 const tmpC = new THREE.Color();
+const tmpOld = new THREE.Color();
 const SOOT = new THREE.Color(0x4a3a30);
 
 /** Damage darkens a piece towards soot; rubble is a little darker still. */
@@ -144,13 +158,15 @@ function doorMatrix(g: Gate, out: THREE.Matrix4): THREE.Matrix4 {
 }
 
 /**
- * The pieces standing in one chunk: one instanced batch (plus its ink) per model, rebuilt whenever the
- * chunk's pieces change. Gate doors are their own batch so they can swing open for pandas.
+ * The pieces standing in one chunk: one instanced batch (plus its ink) per model, rebuilt whenever a piece
+ * is added, removed, ruined or repaired (damage alone just retints its instances). Gate doors are their
+ * own batch so they can swing open for pandas.
  */
 export class ChunkPieces {
   readonly group = new THREE.Group();
   private meshes: THREE.Object3D[] = [];
   private gates: Gate[] = [];
+  private readonly slots = new Map<number, Slot>();
 
   constructor(
     private readonly kit: PieceKit,
@@ -158,6 +174,13 @@ export class ChunkPieces {
   ) {}
 
   set(pieces: readonly Piece[]): void {
+    if (this.sameShape(pieces)) {
+      this.retint(pieces);
+      return;
+    }
+    // Doors keep their swing through a rebuild (it happens mid-siege, with pandas going in and out).
+    const swing = new Map<number, number>();
+    for (const g of this.gates) swing.set(g.id, g.open);
     this.clear();
     if (!pieces.length) return;
     const byLook = new Map<LookId, Piece[]>();
@@ -177,13 +200,17 @@ export class ChunkPieces {
       for (const p of list) {
         const yaw = p.ruined ? pieceYaw(p.rot) + (p.id % 7) * 0.9 : pieceYaw(p.rot);
         const m = pieceMatrix(this.terrain, p, yaw, p.ruined ? RUBBLE_SCALE[p.kind] : 1, tmpM);
-        body.add(m, shade(p, tmpC));
+        const index = body.add(m, shade(p, tmpC));
         ink?.add(m);
-        if (p.kind !== 'gate' || p.ruined) continue;
-        const door = (doors[p.tier] ??= new Batch(this.kit.door(p.tier).body, this.kit.material));
-        const g: Gate = { batch: door, index: 0, x: m.elements[12], y: m.elements[13], z: m.elements[14], yaw, open: 0 };
-        g.index = door.add(doorMatrix(g, tmpM), shade(p, tmpC));
-        gates.push(g);
+        let g: Gate | null = null;
+        if (p.kind === 'gate' && !p.ruined) {
+          const door = (doors[p.tier] ??= new Batch(this.kit.door(p.tier).body, this.kit.material));
+          const open = swing.get(p.id) ?? 0;
+          g = { id: p.id, batch: door, index: 0, x: m.elements[12], y: m.elements[13], z: m.elements[14], yaw, open };
+          g.index = door.add(doorMatrix(g, tmpM), shade(p, tmpC));
+          gates.push(g);
+        }
+        this.slots.set(p.id, { look: id, rot: p.rot, gx: p.gx, gz: p.gz, body, index, gate: g });
       }
       body.finish(out, true, true);
       ink?.finish(out, false, false);
@@ -221,6 +248,27 @@ export class ChunkPieces {
     this.clear();
   }
 
+  /** The same pieces as last built, each still the same model on the same tile, facing the same way. */
+  private sameShape(pieces: readonly Piece[]): boolean {
+    if (pieces.length !== this.slots.size) return false;
+    for (const p of pieces) {
+      const s = this.slots.get(p.id);
+      if (!s || s.look !== lookOf(p) || s.rot !== p.rot || s.gx !== p.gx || s.gz !== p.gz) return false;
+    }
+    return true;
+  }
+
+  /** Only hit points changed: rewrites the damage tint of the pieces whose shade moved. */
+  private retint(pieces: readonly Piece[]): void {
+    for (const p of pieces) {
+      const s = this.slots.get(p.id);
+      if (!s) continue;
+      shade(p, tmpC);
+      tint(s.body.mesh, s.index, tmpC);
+      if (s.gate) tint(s.gate.batch.mesh, s.gate.index, tmpC);
+    }
+  }
+
   private clear(): void {
     for (const m of this.meshes) {
       this.group.remove(m);
@@ -228,7 +276,18 @@ export class ChunkPieces {
     }
     this.meshes = [];
     this.gates = [];
+    this.slots.clear();
   }
+}
+
+/** Sets one instance's colour, uploading only when it actually changed. */
+function tint(mesh: THREE.InstancedMesh | null, index: number, color: THREE.Color): void {
+  if (!mesh?.instanceColor) return;
+  // (Read back from float32: compare loosely.)
+  mesh.getColorAt(index, tmpOld);
+  if (Math.abs(tmpOld.r - color.r) + Math.abs(tmpOld.g - color.g) + Math.abs(tmpOld.b - color.b) < 1e-3) return;
+  mesh.setColorAt(index, color);
+  mesh.instanceColor.needsUpdate = true;
 }
 
 /**

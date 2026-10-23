@@ -46,13 +46,15 @@ export function placeCost(kind: PieceKind): Cost {
   return { ...PIECES[kind].cost };
 }
 
-/** Price of a tier's own material (bamboo for tier 0, the upgrade's price for the others): repairs pay this. */
-export function tierPrice(kind: PieceKind, tier: Tier): Cost {
-  const def = PIECES[kind];
-  return tier === 0 ? def.cost : (def.upgrades[tier - 1] ?? def.cost);
+/**
+ * Built or taken over by a player (repairing or upgrading a world piece makes it the repairer's): only these
+ * make up bases, lookouts and campfires, and only such beds can be claimed. The abandoned buildings don't count.
+ */
+export function isPlayers(p: Piece): boolean {
+  return p.poi < 0 || p.owner !== '';
 }
 
-/** Everything paid for a piece up to its tier (demolishing refunds a share of it). */
+/** Everything paid for a piece up to its tier (repairs and demolishing are priced from it). */
 export function totalPrice(kind: PieceKind, tier: Tier): Cost {
   const def = PIECES[kind];
   const sum: Cost = { ...def.cost };
@@ -66,12 +68,15 @@ export function upgradeCost(p: Piece): Cost | null {
   return next ? { ...next } : null;
 }
 
-/** Repairs cost a share of the tier's price, scaled by the damage (rubble: the full share); null when unhurt. */
+/**
+ * Repairs cost a share of everything the piece is worth up to its tier, scaled by the damage (rubble: the full
+ * share); null when unhurt. Rounded up, while refunds round the same total down, so repair + demolish never pays.
+ */
 export function repairCost(p: Piece): Cost | null {
   const max = maxHp(p.kind, p.tier);
   if (!p.ruined && p.hp >= max) return null;
   const frac = p.ruined ? 1 : Math.min(1, 1 - p.hp / max);
-  return scaleCost(tierPrice(p.kind, p.tier), OPEN.repairShare * frac, Math.ceil);
+  return scaleCost(totalPrice(p.kind, p.tier), OPEN.repairShare * frac, Math.ceil);
 }
 
 /** What demolishing gives back: rubble nothing, a standing piece a share of what it cost. */
@@ -267,11 +272,12 @@ export class StructureStore {
   /** Body handle and steering circle of each standing solid piece (only while attached). */
   private readonly solid = new Map<number, { handle: number; circle: Circle }>();
   private host: OpenHost | null = null;
-  /** Bumped when a bed, chest or lookout appears, goes, breaks or is repaired. */
+  /** Bumped when a bed, chest, lookout or campfire appears, goes, breaks or is repaired. */
   private layoutRev = 0;
   private cacheRev = -1;
   private basesCache: BaseCluster[] = [];
   private lookoutsCache: { x: number; z: number }[] = [];
+  private campfiresCache: { x: number; z: number }[] = [];
   private readonly basePts: { x: number; z: number; bed: boolean }[] = [];
 
   /** `pieces` are copied, so the save they came from stays as it was. */
@@ -361,12 +367,12 @@ export class StructureStore {
     return out;
   }
 
-  /** The closest standing piece of a kind whose centre is within `r` of (x, z). */
-  nearestStanding(kind: PieceKind, x: number, z: number, r: number): Piece | null {
+  /** The closest standing piece of a kind whose centre is within `r` of (x, z) (and that passes `ok`, if given). */
+  nearestStanding(kind: PieceKind, x: number, z: number, r: number, ok?: (p: Piece) => boolean): Piece | null {
     let best: Piece | null = null;
     let bestD = r;
     for (const p of this.kinds[kind]) {
-      if (p.ruined) continue;
+      if (p.ruined || (ok && !ok(p))) continue;
       const d = Math.hypot(tileCenter(p.gx) - x, tileCenter(p.gz) - z);
       if (d <= bestD) {
         bestD = d;
@@ -376,16 +382,25 @@ export class StructureStore {
     return best;
   }
 
-  /** Bases (clusters of standing beds and chests), biggest first. Cached until one of those changes: don't modify. */
+  /**
+   * Bases (clusters of the players' standing beds and chests: see isPlayers), biggest first. Cached until one
+   * of those changes: don't modify.
+   */
   bases(): BaseCluster[] {
     this.refresh();
     return this.basesCache;
   }
 
-  /** Standing lookout towers (cached like bases). */
+  /** The players' standing lookout towers (cached like bases). */
   lookouts(): { x: number; z: number }[] {
     this.refresh();
     return this.lookoutsCache;
+  }
+
+  /** The players' standing campfires, as tile centres (cached like bases). */
+  campfires(): { x: number; z: number }[] {
+    this.refresh();
+    return this.campfiresCache;
   }
 
   private refresh(): void {
@@ -393,12 +408,15 @@ export class StructureStore {
     this.cacheRev = this.layoutRev;
     const pts = this.basePts;
     pts.length = 0;
-    for (const p of this.kinds.bed) if (!p.ruined) pts.push({ x: tileCenter(p.gx), z: tileCenter(p.gz), bed: true });
-    for (const p of this.kinds.storage) if (!p.ruined) pts.push({ x: tileCenter(p.gx), z: tileCenter(p.gz), bed: false });
+    for (const p of this.kinds.bed) if (counts(p)) pts.push({ x: tileCenter(p.gx), z: tileCenter(p.gz), bed: true });
+    for (const p of this.kinds.storage) if (counts(p)) pts.push({ x: tileCenter(p.gx), z: tileCenter(p.gz), bed: false });
     this.basesCache = clusterBases(pts);
     const looks: { x: number; z: number }[] = [];
-    for (const p of this.kinds.lookout) if (!p.ruined) looks.push({ x: tileCenter(p.gx), z: tileCenter(p.gz) });
+    for (const p of this.kinds.lookout) if (counts(p)) looks.push({ x: tileCenter(p.gx), z: tileCenter(p.gz) });
     this.lookoutsCache = looks;
+    const fires: { x: number; z: number }[] = [];
+    for (const p of this.kinds.campfire) if (counts(p)) fires.push({ x: tileCenter(p.gx), z: tileCenter(p.gz) });
+    this.campfiresCache = fires;
   }
 
   private insert(p: Piece): void {
@@ -432,7 +450,12 @@ export class StructureStore {
   }
 }
 
-/** Kinds that make up bases and lookouts (the threat director's view of the world). */
+/** Kinds that make up bases, lookouts and campfires (the threat director's view of the world). */
 function isLandmark(kind: PieceKind): boolean {
-  return kind === 'bed' || kind === 'storage' || kind === 'lookout';
+  return kind === 'bed' || kind === 'storage' || kind === 'lookout' || kind === 'campfire';
+}
+
+/** A landmark the threat director sees: standing, and the players'. */
+function counts(p: Piece): boolean {
+  return !p.ruined && isPlayers(p);
 }

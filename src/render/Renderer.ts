@@ -25,6 +25,11 @@ const OPEN_DEFAULT_TIME = 0.2;
 /** Snowfall starts once this much of the view is snowy highlands, and stops below SNOW_OFF. */
 const SNOW_ON = 0.5;
 const SNOW_OFF = 0.35;
+/** Far plane on a normal map, and in the open world (the camera sees ~50 m; fog ends by ~140 m). */
+const FAR = 260;
+const OPEN_FAR = 160;
+/** The open world's camera jumps (rather than glides through unbuilt chunks) to a focus this far away. */
+const OPEN_SNAP = 40;
 
 /** What the scene holds as its world: a whole map (buildWorld) or the streamed open world. */
 interface SceneWorld {
@@ -47,7 +52,7 @@ export class Renderer {
   readonly effects: Effects;
   private readonly gl: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(CAMERA.fov, 1, 0.5, 260);
+  private readonly camera = new THREE.PerspectiveCamera(CAMERA.fov, 1, 0.5, FAR);
   private readonly sun = new THREE.DirectionalLight(0xfff1d6, 2.4);
   private readonly hemi = new THREE.HemisphereLight(0xeaf7ff, 0x6f8f4a, 1.7);
   private readonly fog = new THREE.Fog(0xbfe8f7, 55, 130);
@@ -57,6 +62,8 @@ export class Renderer {
   private open: OpenWorldView | null = null;
   private openMirror: WorldMirror | null = null;
   private ghost: GhostSpec | null = null;
+  /** The open world's shaders were compiled with its campfire lights on (see OpenWorldView.withLightsOn). */
+  private lightsWarm = false;
   /** Survivor positions (x, z pairs) for the open world's gates. */
   private readonly actorXZ = new Float32Array(16);
   private readonly horde = new HordeView();
@@ -177,6 +184,7 @@ export class Renderer {
     if (map.open) {
       const view = new OpenWorldView(map);
       this.open = view;
+      this.lightsWarm = false;
       // Only this world's mirror: one left over from another world would put its pieces here.
       if (this.openMirror && this.openMirror.map.open?.seed === map.open.seed) view.setMirror(this.openMirror);
       view.setGhost(this.ghost);
@@ -205,6 +213,11 @@ export class Renderer {
   }
 
   private applyTheme(): void {
+    const far = this.open ? OPEN_FAR : FAR;
+    if (this.camera.far !== far) {
+      this.camera.far = far;
+      this.camera.updateProjectionMatrix();
+    }
     if (this.open) {
       // The open world's light follows the biome and the clock (applyOpenSky, every frame).
       this.open.sky.reset();
@@ -230,6 +243,8 @@ export class Renderer {
       this.snow.dispose();
       this.snow = null;
     }
+    // Snowfall carried over from the open world may still be faded out to its biome edge.
+    this.snow?.setStrength(1);
   }
 
   /** The open world's light (biomes under the focus, time of day) into the scene; snowfall only in the snow. */
@@ -263,6 +278,8 @@ export class Renderer {
     if (this.gl.shadowMap.enabled !== high) {
       this.gl.shadowMap.enabled = high;
       this.sun.castShadow = high;
+      // (The open world's night variants too: compile them again on the next frame.)
+      this.lightsWarm = false;
       // Shadow support is compiled into shaders, so force a recompile.
       this.scene.traverse((o) => {
         const m = (o as THREE.Mesh).material;
@@ -407,6 +424,8 @@ export class Renderer {
     }
 
     const f = focus ?? fallback;
+    // Respawning at a far bed (or any other jump): cut to it, priming the chunks there.
+    if (this.open && f && Math.hypot(f.x - this.focus.x, f.z - this.focus.z) > OPEN_SNAP) this.snapCamera = true;
     if (this.open && this.snapCamera) {
       // A new camera (match start, or a jump): ground right away under it, light without easing in.
       const p = f ?? this.map.layout.goal;
@@ -424,6 +443,14 @@ export class Renderer {
     }
     this.world.update(dt, this.time, this.focus.x, this.focus.z);
     this.snow?.update(dt, this.time, this.focus.x, this.focus.y, this.focus.z);
+    if (this.open && !this.lightsWarm) {
+      // Once per world (pandas and the primed chunks in the scene): the four campfire lights change the
+      // light count, which three.js compiles into every lit shader. Compile that variant now, while the
+      // match is starting, rather than at the first dusk. Materials share programs by their parameters,
+      // so chunks streamed in later find theirs.
+      this.lightsWarm = true;
+      this.open.withLightsOn(() => this.gl.compile(this.scene, this.camera));
+    }
   }
 
   /** Last rendered position of the local panda (for tap-to-move). */

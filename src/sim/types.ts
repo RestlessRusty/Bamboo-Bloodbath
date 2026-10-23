@@ -172,7 +172,7 @@ export type GameEvent =
   | { e: 'deny'; id: string; why: string }
   | { e: 'deposit'; id: string }
   | { e: 'respawn'; id: string }
-  /** A siege is coming: it arrives at (x, z) in `eta` seconds (`base`: it goes for the base). */
+  /** A siege is coming from (x, z), where the horde comes out of the wild; it arrives in `eta` seconds (`base`: it goes for the base). */
   | { e: 'siege'; x: number; z: number; eta: number; base: boolean }
   /** The siege is over: beaten off (`won`) or it gave up. */
   | { e: 'siegeOver'; won: boolean }

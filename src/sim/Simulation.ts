@@ -22,7 +22,7 @@ import { BotBrain, type BotWorld, type Brain } from './bots';
 import type { BambooSpot, Cracker, CrackerDrop, Javelin, RackSlot, Survivor, Zombie } from './entities';
 import type { GameMap } from './gameMap';
 import type { Circle } from './mapLayout';
-import { OPEN, PIECES, tileCenter } from './open/config';
+import { chunkOf, OPEN, PIECES, tileCenter, tileOf } from './open/config';
 import { createOpenBot } from './open/openBots';
 import { PhysicsChunks, rockCollider, treeCollider } from './open/physicsChunks';
 import type { OpenCommand, OpenHost, OpenRulesApi, OpenView, Piece, WorldJoin, WorldSave } from './open/types';
@@ -69,6 +69,11 @@ const GATE_GROUPS = (0x0004 << 16) | 0x0002;
 /** Physics chunks around the bodies are checked this often (ticks). */
 const CHUNK_CHECK = 15;
 
+/** Thrown javelins and crackers hit trees, rocks and landmarks up to this high above the ground. */
+const TREE_HIT_HEIGHT = 4.5;
+/** A building piece's height when its piece can't be looked up: the tallest one that blocks anything. */
+const TALLEST_PIECE = Math.max(...Object.values(PIECES).map((d) => (d.blocks === 'none' ? 0 : d.height)));
+
 /** The story cart's solid box (it rolls along +Z of its own frame). */
 const CART_SIZE = { halfWidth: 0.85, halfHeight: 0.7, halfLength: 1.4 };
 
@@ -111,6 +116,10 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
   /** Hiding thickets, hashed: the open world has hundreds of them. */
   private readonly thickets: Obstacles;
   private readonly scratch: Circle[] = [];
+  /** Infinite mode: eaten snack spots (indices into `bamboo`) counting down to their respawn. */
+  private readonly bambooOff: number[] = [];
+  /** Snapshot.bamboo, rebuilt only after a spot changed. Earlier snapshots may still hold it: never mutate it. */
+  private bambooSnap: boolean[] | null = null;
   private readonly rng = new Rng((Math.random() * 4294967296) >>> 0);
   private events: GameEvent[] = [];
   private tick = 0;
@@ -140,6 +149,8 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
   private readonly openRules: OpenRulesApi | null;
   private readonly chunks: PhysicsChunks | null;
   private readonly pieceBodies = new Map<number, Collider>();
+  /** Building pieces' steering circles (also in `obstacles`) and how tall each piece is, for thrown things. */
+  private readonly pieceHeights = new Map<Circle, number>();
 
   constructor(
     readonly map: GameMap,
@@ -300,12 +311,18 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
       javelins: this.javelins.map((j) => ({ id: j.id, x: j.x, y: j.y, z: j.z, yaw: j.yaw, pitch: j.pitch, flying: j.flying })),
       crackers: this.crackers.map((c) => ({ id: c.id, x: c.x, y: c.y, z: c.z, flying: c.flying })),
       crackerDrops: this.crackerDrops.map((d) => ({ id: d.id, x: d.x, y: d.y, z: d.z })),
-      bamboo: this.bamboo.map((b) => b.active),
+      bamboo: this.bambooStates(),
       racks: this.racks.map((r) => (r.refill > 0 ? null : r.weapon)),
       events,
       story: this.mission?.snapshot(),
       open: this.openRules?.snapshot(),
     };
+  }
+
+  /** Which snack spots have food: a fresh array after any change, else the one the last snapshot got. */
+  private bambooStates(): boolean[] {
+    if (!this.bambooSnap) this.bambooSnap = this.bamboo.map((b) => b.active);
+    return this.bambooSnap;
   }
 
   /** Seconds left on the clock, -1 when the match is untimed. */
@@ -484,17 +501,21 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
   }
 
   addObstacle(c: Circle): void {
+    // The rules add a piece's circle at its tile centre, after the piece is in their store.
+    const p = this.openRules?.view.pieceAt(tileOf(c.x), tileOf(c.z));
+    this.pieceHeights.set(c, p ? PIECES[p.kind].height : TALLEST_PIECE);
     this.obstacles.add(c);
   }
 
   removeObstacle(c: Circle): void {
+    this.pieceHeights.delete(c);
     this.obstacles.remove(c);
   }
 
   respawnSurvivor(s: Survivor, x: number, z: number, hp: number): void {
     const at = this.freeSpot(x, z, s);
     this.chunks?.ensure(at.x, at.z);
-    const y = this.map.terrain.heightAt(at.x, at.z);
+    const y = this.map.terrain.groundAt(at.x, at.z);
     if (s.body) {
       s.body.setTranslation({ x: at.x, y: y + CENTER_HEIGHT + 0.05, z: at.z }, true);
       s.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
@@ -547,12 +568,12 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
     if (kill) this.killZombie(z, null);
   }
 
-  /** Same test as normal spawns: dry, not on a ridge or an obstacle, not right next to a panda. */
+  /** Same test as normal spawns: dry, not on a ridge, a bridge or an obstacle, not right next to a panda. */
   validSpawn(x: number, z: number): boolean {
     const { layout, terrain } = this.map;
     const half = layout.size / 2 - 3;
     if (Math.abs(x) > half || Math.abs(z) > half) return false;
-    if (terrain.isWater(x, z) || terrain.ridgeAmount(x, z) > 0.15) return false;
+    if (terrain.isWater(x, z) || terrain.ridgeAmount(x, z) > 0.15 || terrain.onBridge(x, z)) return false;
     if (dist2d({ x, z }, layout.start) < layout.start.r + 8) return false;
     if (dist2d({ x, z }, layout.goal) < layout.goal.r + 2) return false;
     if (this.cart && dist2d({ x, z }, this.cart) < this.cart.r + 1) return false;
@@ -762,7 +783,8 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
   /** A panda's or zombie's capsule (`groups`: SURVIVOR_GROUPS or ZOMBIE_GROUPS). */
   private createBody(x: number, z: number, groups: number): RigidBody {
     this.chunks?.ensure(x, z);
-    const y = this.map.terrain.heightAt(x, z);
+    // On the deck when it's on a bridge, not in the river under it.
+    const y = this.map.terrain.groundAt(x, z);
     const body = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(x, y + CENTER_HEIGHT + 0.05, z)
@@ -793,7 +815,7 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
       spec,
       body: this.createBody(x, z, SURVIVOR_GROUPS),
       x,
-      y: this.map.terrain.heightAt(x, z),
+      y: this.map.terrain.groundAt(x, z),
       z,
       rot,
       faceX: Math.sin(rot),
@@ -837,7 +859,7 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
       id: this.nextZombieId++,
       body: this.createBody(x, z, ZOMBIE_GROUPS),
       x,
-      y: this.map.terrain.heightAt(x, z),
+      y: this.map.terrain.groundAt(x, z),
       z,
       rot,
       faceX: Math.sin(rot),
@@ -1186,7 +1208,7 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
       // Fell through the world somehow: put them back at the start (the open world's spawn point).
       const at = this.openRules ? this.openRules.spawnPoint(s.spec) : this.map.layout.start;
       this.chunks?.ensure(at.x, at.z);
-      body.setTranslation({ x: at.x, y: this.map.terrain.heightAt(at.x, at.z) + 2, z: at.z }, true);
+      body.setTranslation({ x: at.x, y: this.map.terrain.groundAt(at.x, at.z) + 2, z: at.z }, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       return;
     }
@@ -1634,7 +1656,7 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
       if (landed) continue;
 
       const ground = terrain.groundAt(nx, nz);
-      const hitTree = this.obstacles.near(nx, nz, 0.05, this.scratch).length > 0 && ny < ground + 4.5;
+      const hitTree = this.hitsObstacle(nx, ny, nz, ground);
       const outside = Math.abs(nx) > half || Math.abs(nz) > half;
       if (hitTree || outside || ny <= ground + 0.05 || j.age > JAVELIN.maxAge) {
         this.dropJavelin(j, hitTree || outside ? j.x : nx, hitTree || outside ? j.z : nz, -0.5);
@@ -1644,6 +1666,18 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
       j.y = ny;
       j.z = nz;
     }
+  }
+
+  /**
+   * A thrown thing at (x, y, z) runs into a tree, rock or landmark (up to TREE_HIT_HEIGHT above the ground)
+   * or a building piece (only as high as the piece is: a javelin flies over a bed).
+   */
+  private hitsObstacle(x: number, y: number, z: number, ground: number): boolean {
+    const heights = this.pieceHeights;
+    for (const c of this.obstacles.near(x, z, 0.05, this.scratch)) {
+      if (y < ground + (heights.get(c) ?? TREE_HIT_HEIGHT)) return true;
+    }
+    return false;
   }
 
   private dropJavelin(j: Javelin, x: number, z: number, pitch: number): void {
@@ -1712,7 +1746,7 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
         const ny = c.y + c.vy * SIM_DT;
         const nz = c.z + c.vz * SIM_DT;
         const ground = terrain.groundAt(nx, nz);
-        const hitTree = this.obstacles.near(nx, nz, 0.05, this.scratch).length > 0 && ny < ground + 4.5;
+        const hitTree = this.hitsObstacle(nx, ny, nz, ground);
         const outside = Math.abs(nx) > half || Math.abs(nz) > half;
         if (hitTree || outside || ny <= ground + 0.05 || c.age > 3) {
           // Bounce off a tree or the map edge: it drops where it was.
@@ -1787,27 +1821,33 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
     const active = this.survivors.filter((s) => s.state === 'active');
     const open = this.openRules;
 
-    for (const b of this.bamboo) {
-      if (!b.active) {
-        b.respawn -= SIM_DT;
-        if (b.respawn <= 0) b.active = true;
-        continue;
-      }
-      // A plain loop: the open world has hundreds of spots. There a hungry panda eats even at full health.
-      let eater: Survivor | null = null;
-      for (const s of active) {
-        if (dist2d(s, b) >= PICKUP.bambooRadius) continue;
-        if (s.hp < SURVIVOR.maxHp || (open !== null && open.wantsFood(s))) {
-          eater = s;
-          break;
+    if (open) {
+      this.updateOpenSnacks(active, open);
+    } else {
+      for (const b of this.bamboo) {
+        if (!b.active) {
+          b.respawn -= SIM_DT;
+          if (b.respawn <= 0) {
+            b.active = true;
+            this.bambooSnap = null;
+          }
+          continue;
         }
+        let eater: Survivor | null = null;
+        for (const s of active) {
+          if (dist2d(s, b) >= PICKUP.bambooRadius) continue;
+          if (s.hp < SURVIVOR.maxHp) {
+            eater = s;
+            break;
+          }
+        }
+        if (!eater) continue;
+        eater.hp = Math.min(SURVIVOR.maxHp, eater.hp + PICKUP.bambooHeal);
+        b.active = false;
+        b.respawn = PICKUP.bambooRespawn;
+        this.bambooSnap = null;
+        this.events.push({ e: 'eat', id: eater.spec.id });
       }
-      if (!eater) continue;
-      eater.hp = Math.min(SURVIVOR.maxHp, eater.hp + PICKUP.bambooHeal);
-      b.active = false;
-      b.respawn = PICKUP.bambooRespawn;
-      this.events.push({ e: 'eat', id: eater.spec.id });
-      open?.ate(eater);
     }
 
     // Racks hand out a copy of their weapon into the second slot (your starting weapon stays),
@@ -1865,6 +1905,50 @@ export class Simulation implements BotWorld, MissionHost, OpenHost {
       taker.crackers++;
       this.crackerDrops.splice(i, 1);
       this.events.push({ e: 'loot', id: taker.spec.id });
+    }
+  }
+
+  /**
+   * The open world's hundreds of snack spots: only the eaten ones count down, and each panda only looks at
+   * the spots in the chunks within reach. A hungry panda eats even at full health.
+   */
+  private updateOpenSnacks(active: readonly Survivor[], open: OpenRulesApi): void {
+    const off = this.bambooOff;
+    // Spots eaten below are pushed after `waiting`, so they start counting next tick (as on normal maps).
+    const waiting = off.length;
+    const world = this.map.open;
+    if (world) {
+      const r = PICKUP.bambooRadius;
+      for (const s of active) {
+        const cx1 = chunkOf(s.x + r);
+        const cz1 = chunkOf(s.z + r);
+        for (let cz = chunkOf(s.z - r); cz <= cz1; cz++) {
+          for (let cx = chunkOf(s.x - r); cx <= cx1; cx++) {
+            for (const i of world.chunkContents(cx, cz).bamboo) {
+              const b = this.bamboo[i];
+              if (!b || !b.active || dist2d(s, b) >= r) continue;
+              if (s.hp >= SURVIVOR.maxHp && !open.wantsFood(s)) continue;
+              s.hp = Math.min(SURVIVOR.maxHp, s.hp + PICKUP.bambooHeal);
+              b.active = false;
+              b.respawn = PICKUP.bambooRespawn;
+              off.push(i);
+              this.bambooSnap = null;
+              this.events.push({ e: 'eat', id: s.spec.id });
+              open.ate(s);
+            }
+          }
+        }
+      }
+    }
+    // Downwards, swapping the last one in: what lands at k was either counted already or was just eaten.
+    for (let k = waiting - 1; k >= 0; k--) {
+      const b = this.bamboo[off[k]];
+      b.respawn -= SIM_DT;
+      if (b.respawn > 0) continue;
+      b.active = true;
+      this.bambooSnap = null;
+      off[k] = off[off.length - 1];
+      off.pop();
     }
   }
 

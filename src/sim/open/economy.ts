@@ -2,7 +2,7 @@ import { CRACKER, JAVELIN, SURVIVOR } from '../../config';
 import type { Survivor } from '../entities';
 import type { WeaponType } from '../types';
 import { OPEN, type RecipeDef } from './config';
-import { emptyResources, RESOURCE_KINDS, type Cost, type LootBag, type NodeKind, type ResourceKind, type Resources } from './types';
+import { emptyResources, RESOURCE_KINDS, type Cost, type NodeKind, type ResourceKind, type Resources } from './types';
 
 /**
  * Resources in infinite mode: backpacks (OPEN.packMax units in all), the team stash, paying for things
@@ -117,11 +117,6 @@ export function drainHunger(hunger: number, dt: number): number {
 /** Eating: hunger after `food` points. */
 export function feed(hunger: number, food: number): number {
   return Math.min(OPEN.hungerMax, hunger + food);
-}
-
-/** A bag is taken whole, so only when everything in it fits in the pack (firecrackers beyond the cap are lost). */
-export function bagFits(bag: LootBag, pack: Readonly<Resources>): boolean {
-  return packTotal(bag.res) <= packRoom(pack);
 }
 
 /** A fresh bag's contents from loose loot (rounded down, negatives dropped). */

@@ -54,6 +54,21 @@ export function nearest<T extends { x: number; z: number }>(items: readonly T[],
   return best;
 }
 
+/** `nearest` over just the uneaten bamboo, without building a filtered copy (the open world has hundreds). */
+function nearestSnack(spots: readonly BambooSpot[], from: { x: number; z: number }, maxD: number): BambooSpot | null {
+  let best: BambooSpot | null = null;
+  let bestD = maxD;
+  for (const b of spots) {
+    if (!b.active) continue;
+    const d = Math.hypot(b.x - from.x, b.z - from.z);
+    if (d < bestD) {
+      bestD = d;
+      best = b;
+    }
+  }
+  return best;
+}
+
 /** A pack at least this big within PACK_RANGE makes a bot throw a firecracker. */
 const PACK_SIZE = 4;
 const PACK_RANGE = 7;
@@ -198,7 +213,7 @@ export class BotBrain implements Brain {
     };
 
     const downed = nearest(w.survivors.filter((s) => s !== me && s.state === 'downed'), me, 30);
-    const snack = me.hp < 55 ? nearest(w.bamboo.filter((b) => b.active), me, 20) : null;
+    const snack = me.hp < 55 ? nearestSnack(w.bamboo, me, 20) : null;
     const spear = hasJavelins(me) && me.ammo < JAVELIN.ammo ? nearest(w.javelins.filter((j) => !j.flying), me, 14) : null;
     const loot = me.crackers < CRACKER.max ? nearest(w.crackerDrops, me, 10) : null;
     const leader = nearest(w.survivors.filter((s) => !s.spec.bot && s.state === 'active'), me, Infinity);

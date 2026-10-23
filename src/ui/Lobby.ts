@@ -251,7 +251,9 @@ export class Lobby {
     this.ref('room-code').textContent = v.code;
     this.ref('qr-count').textContent = `${v.players.length}/${MAX_PLAYERS} pandas in the room.`;
     // Never a preview of the open world (it's far too big to build for a thumbnail).
-    if (v.mode !== 'open') this.mapPicker.set(v.mapPick, v.isHost);
+    // Infinite: the saved world decides the map, the bots and the difficulty; only the world line shows.
+    const open = v.mode === 'open';
+    if (!open) this.mapPicker.set(v.mapPick, v.isHost);
 
     const list = this.ref('players');
     list.innerHTML = '';
@@ -263,7 +265,8 @@ export class Lobby {
       li.appendChild(sub);
       list.appendChild(li);
     }
-    for (let i = 0; i < v.bots; i++) {
+    // The quick-play bot count means nothing in a world (it brings its own bots).
+    for (let i = 0; i < (open ? 0 : v.bots); i++) {
       const li = el('li', 'bot');
       li.textContent = `Bot buddy ${i + 1}`;
       list.appendChild(li);
@@ -284,8 +287,6 @@ export class Lobby {
     markActive(diff, v.difficulty);
     for (const b of diff.querySelectorAll<HTMLButtonElement>('button')) b.disabled = !v.isHost;
 
-    // Infinite: the saved world decides the map, the bots and the difficulty; only the world line shows.
-    const open = v.mode === 'open';
     const mode = this.ref('mode');
     markActive(mode, v.mode);
     for (const b of mode.querySelectorAll<HTMLButtonElement>('button')) b.disabled = !v.isHost;

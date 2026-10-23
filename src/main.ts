@@ -7,7 +7,7 @@ import { RemoteGame } from './game/RemoteGame';
 import type { GameContext, Session } from './game/Session';
 import { InputManager, requestTiltPermission } from './input/InputManager';
 import { takeInviteFromUrl } from './net/invite';
-import { NetClient } from './net/NetClient';
+import { JoinRejected, NetClient } from './net/NetClient';
 import { NetHost } from './net/NetHost';
 import type { LobbyPlayer } from './net/protocol';
 import { forgetRoom, markInRoom, ownRoomCode, rejoinableRoom, seatFor } from './net/rooms';
@@ -288,8 +288,16 @@ function unlockAudio(): void {
 }
 document.addEventListener('pointerdown', unlockAudio, { once: true });
 
+/**
+ * The name we play under. With none picked, the random fallback is stored as the nickname the first time
+ * it's needed: infinite-mode saves know players by name, so it must stay the same on the next visit.
+ */
 function nickname(): string {
-  return settings.nickname.trim() || fallbackName;
+  const name = settings.nickname.trim();
+  if (name) return name;
+  settings.nickname = fallbackName;
+  saveSettings(settings);
+  return fallbackName;
 }
 
 function profile(): Omit<LobbyPlayer, 'id'> {
@@ -465,8 +473,9 @@ function prepareWorld(slot: number, create: NewWorld | null): { save: WorldSave;
   }
   const raw = loadWorld(slot);
   if (!raw) return null;
-  const ref = openRef(raw.seed);
-  return { save: sanitizeSave(raw, loadMap(ref)), ref, stored: true };
+  // `>>> 0` is the world generator's own seed, so the sanitised save's ref below finds this map in the cache.
+  const save = sanitizeSave(raw, loadMap(openRef(raw.seed >>> 0)));
+  return { save, ref: openRef(save.seed), stored: true };
 }
 
 /** Rules of an open-world match: the world's own rules and difficulty, no clock, no rescue hut. */
@@ -819,7 +828,13 @@ async function reconnect(code: string): Promise<void> {
       // The host answers with the match (our panda back), or the room if the match just ended.
       useClient(c);
       return;
-    } catch {
+    } catch (err) {
+      if (token !== netToken) return;
+      // The host said no (our panda went to someone else and the world is full, another game version): stop trying.
+      if (err instanceof JoinRejected) {
+        leaveToMenu(errorText(err));
+        return;
+      }
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
     }
   }
@@ -941,13 +956,8 @@ function setRoomMode(m: RoomMode): void {
   if (!h || session) return;
   if (m === 'open') {
     const worlds = savedWorlds();
-    const pick = worlds.find((w) => w.slot === h.world?.slot) ?? worlds[0];
-    if (!pick) {
-      // Nothing saved yet (worlds are made in the Infinite menu): stay on quick play.
-      h.setMode('quick');
-      return;
-    }
-    h.setWorld(pick);
+    // Nothing saved yet (worlds are made in the Infinite menu): no world, so the lobby says so and Start stays off.
+    h.setWorld(worlds.find((w) => w.slot === h.world?.slot) ?? worlds[0] ?? null);
   }
   h.setMode(m);
 }

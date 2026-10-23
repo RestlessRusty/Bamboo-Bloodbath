@@ -1,7 +1,7 @@
 import type { GameMap } from '../gameMap';
 import type { GameEvent } from '../types';
 import { chunkOf, tileCenter } from './config';
-import { clusterBases, tileKey } from './structures';
+import { clusterBases, isPlayers, tileKey } from './structures';
 import type { LootBag, OpenWorldData, Piece, WorldJoin } from './types';
 
 /** Chunk keys touched since the renderer last looked. */
@@ -33,7 +33,7 @@ export class WorldMirror {
   /** Two sets of dirty marks, swapped by takeDirty so nothing is allocated per frame. */
   private dirty: Dirty = newDirty();
   private spare: Dirty = newDirty();
-  /** Bumped when a bed or storage chest appears, goes, breaks or is repaired. */
+  /** Bumped when a bed or storage chest appears, goes, breaks, is repaired or is taken over. */
   private baseRev = 0;
   private centerRev = -1;
   private center: { x: number; z: number } | null = null;
@@ -126,13 +126,16 @@ export class WorldMirror {
     return out;
   }
 
-  /** The middle of the biggest base (cluster of standing beds and chests), or null before there is one. */
+  /**
+   * The middle of the biggest base (cluster of the players' standing beds and chests, as the rules count them),
+   * or null before there is one.
+   */
   baseCenter(): { x: number; z: number } | null {
     if (this.centerRev !== this.baseRev) {
       this.centerRev = this.baseRev;
       const pts: { x: number; z: number; bed: boolean }[] = [];
       for (const p of this.byId.values()) {
-        if (p.ruined || (p.kind !== 'bed' && p.kind !== 'storage')) continue;
+        if (p.ruined || !isPlayers(p) || (p.kind !== 'bed' && p.kind !== 'storage')) continue;
         pts.push({ x: tileCenter(p.gx), z: tileCenter(p.gz), bed: p.kind === 'bed' });
       }
       const best = clusterBases(pts)[0];
@@ -155,7 +158,7 @@ export class WorldMirror {
     if (other && other.id !== p.id) this.drop(other);
     if (old && (old.gx !== p.gx || old.gz !== p.gz)) this.drop(old);
     if (isBasePiece(p) || (old && isBasePiece(old))) {
-      if (!old || old.ruined !== p.ruined || old.kind !== p.kind) this.baseRev++;
+      if (!old || old.ruined !== p.ruined || old.kind !== p.kind || isPlayers(old) !== isPlayers(p)) this.baseRev++;
     }
     this.byId.set(p.id, p);
     this.byTile.set(key, p);

@@ -1112,12 +1112,9 @@ small {
 .hud-goal.siege .hud-arrow {
   fill: var(--blood);
 }
-/* Build mode: the palette sits where the status line was. */
+/* Build mode: the palette sits where the status line was (the revive bar, at 32 %, stays clear of it). */
 body.open-building .hud-status {
   display: none;
-}
-body.open-building .hud-revive {
-  bottom: calc(170px + var(--safe-b));
 }
 .overlay {
   position: absolute;
@@ -1893,9 +1890,9 @@ body.open-building .hud-revive {
   gap: 6px;
 }
 .icon-btn.world-del {
-  width: 34px;
-  height: 34px;
-  padding: 5px;
+  width: 40px;
+  height: 40px;
+  padding: 7px;
   box-shadow: 0 2px 0 var(--ink);
 }
 .btn.danger {
@@ -1911,10 +1908,6 @@ body.open-building .hud-revive {
   }
   .world-name {
     font-size: 15px;
-  }
-  .icon-btn.world-del {
-    width: 30px;
-    height: 30px;
   }
 }
 
@@ -2184,41 +2177,46 @@ body.open-building .hud-revive {
     transform: translate(calc(-50% + 5px), 0);
   }
 }
-/* Build mode: piece info and palette bottom middle, clear of the Place button on the right. */
+/*
+ * Build mode: a low strip along the bottom (one line of info, one row of pieces), between the joystick's
+ * resting spot and the Place button, so the ghost tile and your panda stay in view on a 360 px tall screen.
+ * The piece's actions (Demolish, Upgrade, Repair, Done) stack above its right end, where Dash and Switch
+ * weapon are outside build mode.
+ */
 .open-build {
   position: absolute;
-  right: calc(136px + var(--safe-r));
+  right: calc(128px + var(--safe-r));
   bottom: calc(8px + var(--safe-b));
-  width: min(400px, calc(100vw - 300px));
+  width: min(560px, calc(100vw - 284px - var(--safe-l) - var(--safe-r)));
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 5px 6px;
+  gap: 3px;
+  padding: 3px 4px 4px;
   pointer-events: auto;
   background: rgba(255, 248, 234, 0.94);
   border: 3px solid var(--ink);
-  border-radius: 16px;
+  border-radius: 14px;
   box-shadow: 0 4px 0 var(--ink);
 }
 .build-info {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  min-height: 26px;
-}
-.build-text {
-  flex: 1 1 110px;
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
   align-items: center;
   column-gap: 6px;
+  min-width: 0;
+  height: 16px;
+  padding: 0 4px;
+  overflow: hidden;
+  white-space: nowrap;
   font-size: 13px;
-  line-height: 1.15;
+  line-height: 16px;
+}
+.build-info > b,
+.build-info > .cost {
+  flex: none;
 }
 .build-note {
-  max-width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2230,18 +2228,37 @@ body.open-building .hud-revive {
   font-weight: 700;
   opacity: 1;
 }
-.build-info .btn.small {
-  display: inline-flex;
-  align-items: center;
+/* Bottom-up, ending 6 px above the panel; right of it are the Build / Craft buttons by the minimap. */
+.build-actions {
+  position: absolute;
+  right: calc(var(--hud-map) - 52px);
+  bottom: calc(100% + 9px);
+  width: 78px;
+  display: flex;
+  flex-direction: column;
   gap: 4px;
-  padding: 2px 7px;
-  font-size: 12px;
+  pointer-events: none;
+}
+.build-actions .btn.small {
+  pointer-events: auto;
+  min-height: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 2px 4px;
+  font-size: 13px;
+  line-height: 1.1;
   white-space: nowrap;
   border-width: 2px;
   box-shadow: 0 2px 0 var(--ink);
 }
-.build-info .btn.small.ghost {
-  box-shadow: none;
+.build-actions .btn.small.ghost {
+  background: rgba(255, 248, 234, 0.94);
+}
+.build-actions .btn.danger-text {
+  color: var(--blood);
 }
 .cost {
   display: inline-flex;
@@ -2263,18 +2280,21 @@ body.open-building .hud-revive {
 .btn.poor {
   opacity: 0.5;
 }
+/* One row of all eight pieces, each as wide as its name (and price) needs, shrinking a bit when it's tight. */
 .build-palette {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 4px;
+  display: flex;
+  gap: 3px;
 }
 .palette-btn {
+  flex: 1 1 auto;
   min-width: 0;
+  min-height: 40px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 1px;
-  padding: 2px 3px;
+  padding: 1px 2px;
   font: inherit;
   color: var(--ink);
   background: #fff;
@@ -2288,6 +2308,20 @@ body.open-building .hud-revive {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+  line-height: 1.1;
+}
+.palette-btn .cost {
+  max-width: 100%;
+  overflow: hidden;
+}
+/* No room for the prices: the chosen piece's is on the info line. */
+@media (max-width: 739px) {
+  .palette-btn .cost {
+    display: none;
+  }
+  .palette-btn b {
+    font-size: 11px;
+  }
 }
 .palette-btn.active {
   background: #fff3b8;
@@ -2347,15 +2381,18 @@ body.open-building .hud-revive {
   width: 55%;
   height: 55%;
 }
-/* Craft panel: middle of the screen, under the messages. */
+/*
+ * Craft panel: middle of the screen, under the messages, ending above the action buttons (its body scrolls);
+ * narrow enough to stay clear of the Switch weapon button at 640 px wide.
+ */
 .open-craft {
   position: absolute;
   left: 50%;
   top: calc(34% + var(--safe-t));
   transform: translateX(-50%);
-  width: min(340px, 52vw);
+  width: min(300px, 38vw);
   min-width: 0;
-  max-height: calc(66% - 12px - var(--safe-t));
+  max-height: calc(66% - 104px - var(--safe-t) - var(--safe-b));
   padding: 8px 10px;
   gap: 6px;
   text-align: left;
@@ -2400,6 +2437,7 @@ body.open-building .hud-revive {
 }
 .craft-row .btn {
   flex: none;
+  min-height: 40px;
   display: inline-flex;
   align-items: center;
   gap: 4px;

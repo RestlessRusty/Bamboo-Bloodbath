@@ -301,7 +301,10 @@ export interface WorldSave {
   bags: LootBag[];
   nextBagId: number;
   stash: Resources;
-  /** Humans by nickname, bots by id ('b1'…). */
+  /**
+   * Humans by nickname, bot seats by id ('b1'…) even while a guest is playing that panda. A nickname that looks
+   * like a seat id is stored as '~b2' so it can't clash with a bot.
+   */
   players: Record<string, PlayerSave>;
   hordes: HordeSave[];
   /** World clock of the next siege. */

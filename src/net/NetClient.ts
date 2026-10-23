@@ -18,6 +18,9 @@ import {
   type RoomWorld,
 } from './protocol';
 
+/** The host turned a join away (full world or room, another game version): trying again won't help. */
+export class JoinRejected extends Error {}
+
 /** A guest's connection to the host's room. */
 export class NetClient {
   players: LobbyPlayer[] = [];
@@ -46,6 +49,8 @@ export class NetClient {
   /** `retry`: the connection dropped (worth reconnecting), rather than the host closing the room. */
   onClosed: ((reason: string, retry: boolean) => void) | null = null;
   private closed = false;
+  /** Last known state of every bamboo snack spot this match (infinite mode only sends the ones near us). */
+  private readonly snacks: boolean[] = [];
 
   private constructor(
     private readonly peer: Peer,
@@ -66,12 +71,12 @@ export class NetClient {
     const peer = await openPeer();
     return new Promise((resolve, reject) => {
       let settled = false;
-      const fail = (message: string) => {
+      const fail = (message: string, rejected = false) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timer);
         peer.destroy();
-        reject(new Error(message));
+        reject(rejected ? new JoinRejected(message) : new Error(message));
       };
       const timer = window.setTimeout(() => fail('Could not connect to the room. Check the code and try again.'), 15000);
 
@@ -92,7 +97,7 @@ export class NetClient {
           window.clearTimeout(timer);
           resolve(new NetClient(peer, conn, msg.id, code));
         } else if (msg?.t === 'reject') {
-          fail(msg.reason);
+          fail(typeof msg.reason === 'string' && msg.reason ? msg.reason : 'The host turned us away.', true);
         }
       });
     });
@@ -152,6 +157,7 @@ export class NetClient {
           this.playing = false;
           const you = typeof msg.you === 'string' && msg.specs.some((s) => s?.id === msg.you) ? msg.you : null;
           const open = sanitizeJoin(msg.open);
+          this.snacks.length = 0;
           if (open) {
             this.mode = 'open';
             this.world = sanitizeRoomWorld(msg.world) ?? this.world;
@@ -167,7 +173,7 @@ export class NetClient {
         if (Array.isArray(msg.specs)) this.onSpecs?.(msg.specs);
         break;
       case 'snap':
-        this.onSnapshot?.(decodeSnapshot(msg.s));
+        if (msg.s && typeof msg.s === 'object') this.onSnapshot?.(decodeSnapshot(msg.s, this.snacks));
         break;
       case 'bye':
         this.lost(msg.reason || 'The host left.', false);

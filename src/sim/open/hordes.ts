@@ -40,6 +40,15 @@ const r1 = (v: number) => Math.round(v * 10) / 10;
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+/** Zombies never appear this close past a base's edge (inside the walls, or right at them). */
+const BASE_CLEAR = 4;
+
+/** Whether (x, z) is in (or right by) one of the bases. */
+function inBase(bases: readonly { x: number; z: number; r: number }[], x: number, z: number): boolean {
+  for (const b of bases) if (Math.hypot(b.x - x, b.z - z) < b.r + BASE_CLEAR) return true;
+  return false;
+}
+
 /**
  * The rules may hand over the campfires too (ThreatContext doesn't promise them). Without them, the
  * bases stand in: that's where the campfires usually are.
@@ -175,7 +184,7 @@ class HordeDirector implements HordeDirectorApi {
       this.despawnAmbient(host);
       if (this.ready) this.growHordes(host, ctx.day);
     }
-    this.fillHordes(host);
+    this.fillHordes(host, ctx);
     this.stepAmbient(host, ctx);
   }
 
@@ -259,8 +268,15 @@ class HordeDirector implements HordeDirectorApi {
     g.members.push(z);
   }
 
+  /** Zombies on the map that count against OPEN.zombiesMax (dying ones don't, as in spawnZombie). */
+  private live(host: OpenHost): number {
+    let n = 0;
+    for (const z of host.zombies) if (z.state !== 'dying') n++;
+    return n;
+  }
+
   private canSpawn(host: OpenHost): boolean {
-    return this.budget > 0 && this.tries > 0 && host.zombies.length < OPEN.zombiesMax;
+    return this.budget > 0 && this.tries > 0 && this.live(host) < OPEN.zombiesMax;
   }
 
   /** One spawn attempt (spawnZombie checks the spot is fair). */
@@ -299,20 +315,25 @@ class HordeDirector implements HordeDirectorApi {
     this.ambientT = AMBIENT_EVERY;
     const A = OPEN.ambient;
     const pandas = this.pandas;
-    if (!pandas.length || !this.canSpawn(host) || host.zombies.length >= OPEN.zombiesMax - AMBIENT_ROOM) return;
+    if (!pandas.length || !this.canSpawn(host) || this.live(host) >= OPEN.zombiesMax - AMBIENT_ROOM) return;
     let want = ((ctx.night ? A.night : A.day) + A.perPlayer * pandas.length) * this.hordeMul;
     if (this.current?.attacking) want *= 0.5; // make room for the siege
     if (this.ambient.members.length >= Math.round(want)) return;
 
     const lights = ctx.night ? this.lights(ctx) : null;
+    const bases = ctx.bases();
     for (let i = 0; i < 4 && this.tries > 0; i++) {
       const p = this.rng.pick(pandas);
       const a = this.rng.range(0, Math.PI * 2);
       const d = this.rng.range(A.spawnMin, A.spawnMax);
       const x = p.x + Math.sin(a) * d;
       const z = p.z + Math.cos(a) * d;
-      // Out of everyone's sight, and never in a campfire's light at night.
-      if (this.nearestPanda(x, z) < A.spawnMin * 0.9 || (lights && lights.some((l) => Math.hypot(l.x - x, l.z - z) < l.r))) {
+      // Out of everyone's sight, never inside a base, and never in a campfire's light at night.
+      if (
+        this.nearestPanda(x, z) < A.spawnMin * 0.9 ||
+        inBase(bases, x, z) ||
+        (lights && lights.some((l) => Math.hypot(l.x - x, l.z - z) < l.r))
+      ) {
         this.tries--;
         continue;
       }
@@ -504,14 +525,24 @@ class HordeDirector implements HordeDirectorApi {
   }
 
   /** Puts a materialised horde's zombies on the map around its marker, a few per tick, as room allows. */
-  private fillHordes(host: OpenHost): void {
+  private fillHordes(host: OpenHost, ctx: ThreatContext): void {
+    let bases: { x: number; z: number; r: number }[] | null = null;
     for (const h of this.hordes) {
       if (!h.real || h.leaving) continue;
       while (h.members.length < h.n && this.canSpawn(host)) {
         const r = 3 + Math.sqrt(h.n) * 1.5 + Math.min(25, h.fails * 2);
         const a = this.rng.range(0, Math.PI * 2);
         const d = this.rng.range(0, r);
-        const zb = this.trySpawn(host, h.x + Math.sin(a) * d, h.z + Math.cos(a) * d, { horde: h.id, siege: false, goal: h.goal });
+        const x = h.x + Math.sin(a) * d;
+        const z = h.z + Math.cos(a) * d;
+        // Never inside someone's walls (a horde roaming over a base fills in once it's past).
+        bases ??= ctx.bases();
+        if (inBase(bases, x, z)) {
+          this.tries--;
+          h.fails++;
+          continue;
+        }
+        const zb = this.trySpawn(host, x, z, { horde: h.id, siege: false, goal: h.goal });
         if (!zb) {
           h.fails++;
           continue;

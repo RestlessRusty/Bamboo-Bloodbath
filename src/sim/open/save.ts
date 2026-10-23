@@ -26,6 +26,15 @@ import {
 /** Most bot buddies a world can have (the host's panda takes the fourth seat). */
 const MAX_BOTS = MAX_PLAYERS - 1;
 const NAME_MAX = 24;
+const BOT_SEAT = /^b\d+$/;
+
+/**
+ * A bot buddy's seat ('b1'…'bN'). Saves keep these by id, as the bot's panda, even while a guest who took one
+ * over is playing it; everyone else is kept by nickname.
+ */
+export function isBotSeat(id: string): boolean {
+  return BOT_SEAT.test(id);
+}
 
 /** A fresh world: the abandoned buildings as generated, nothing touched, a bright morning of day 1. */
 export function newWorldSave(map: GameMap, slot: number, name: string, difficulty: Difficulty, bots: number, now: number): WorldSave {
@@ -138,7 +147,10 @@ export function sanitizeSave(raw: WorldSave, map: GameMap): WorldSave {
   if (isObject(r.players)) {
     for (const [key, it] of Object.entries(r.players as Record<string, unknown>)) {
       const p = player(it, half);
-      if (p && key) players[key] = p;
+      if (!p || !key) continue;
+      // Only a bot seat's entry is a bot's (botSpecsFor reads those); one under a nickname is a human's.
+      if (!isBotSeat(key)) p.bot = false;
+      players[key] = p;
     }
   }
 

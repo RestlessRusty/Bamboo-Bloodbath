@@ -76,13 +76,17 @@ const ZERO_SCALE = [0, 1, 2, 4, 5, 6, 8, 9, 10];
 /**
  * One instanced batch of a streamed chunk, filled in one go (`add`, then `finish`). With `toggles`, it keeps
  * a copy of every matrix so single instances can be hidden (scaled to nothing where they stand, so the
- * bounding sphere stays right) and shown again: depleted nodes, opened crates.
+ * bounding sphere stays right) and shown again: depleted nodes, opened crates. A batch with every instance
+ * hidden isn't drawn at all (nor into the shadow map).
  */
 export class Batch {
   mesh: THREE.InstancedMesh | null = null;
   private readonly m: number[] = [];
   private readonly c: number[] = [];
   private orig: Float32Array | null = null;
+  /** 1 per hidden instance (toggling batches only). */
+  private hidden: Uint8Array | null = null;
+  private shown = 0;
 
   constructor(
     private readonly geo: THREE.BufferGeometry,
@@ -115,7 +119,11 @@ export class Batch {
     (mesh.instanceMatrix.array as Float32Array).set(this.m);
     mesh.instanceMatrix.needsUpdate = true;
     if (this.colored) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(this.c), 3);
-    if (this.toggles) this.orig = new Float32Array(this.m);
+    if (this.toggles) {
+      this.orig = new Float32Array(this.m);
+      this.hidden = new Uint8Array(n);
+    }
+    this.shown = n;
     mesh.computeBoundingSphere();
     mesh.castShadow = cast;
     mesh.receiveShadow = receive;
@@ -130,11 +138,16 @@ export class Batch {
   show(i: number, on: boolean): void {
     const mesh = this.mesh;
     const orig = this.orig;
-    if (!mesh || !orig) return;
+    const hidden = this.hidden;
+    if (!mesh || !orig || !hidden) return;
     const a = mesh.instanceMatrix.array as Float32Array;
     const o = i * 16;
     for (let k = 0; k < 16; k++) a[o + k] = orig[o + k];
     if (!on) for (const k of ZERO_SCALE) a[o + k] = 0;
     mesh.instanceMatrix.needsUpdate = true;
+    if (on === !hidden[i]) return;
+    hidden[i] = on ? 0 : 1;
+    this.shown += on ? 1 : -1;
+    mesh.visible = this.shown > 0;
   }
 }

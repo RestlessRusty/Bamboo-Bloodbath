@@ -37,6 +37,8 @@ const GHOST_AHEAD = 2.5;
 /** Station / stash checks and prices run every Nth update (~10 Hz). */
 const SLOW_EVERY = 6;
 const DENY_MS = 1800;
+/** The same refusal again within this long isn't shown (or buzzed) again. Shorter than DENY_MS. */
+const DENY_REPEAT_MS = 1500;
 /** "+2" floaters on the pack add up gathers this close together. */
 const GAIN_MS = 1400;
 
@@ -178,6 +180,8 @@ export class OpenHud {
   private craftOpen = false;
   private readonly craftPoor = new Map<RecipeId, boolean>();
   private denyUntil = 0;
+  private denyText = '';
+  private denyAt = -Infinity;
   private readonly gainN = [0, 0, 0, 0];
   private readonly gainUntil = [0, 0, 0, 0];
 
@@ -220,13 +224,13 @@ export class OpenHud {
         <button class="open-btn" data-act="craft" data-ref="craft-btn" aria-label="Craft" title="Craft (F)" hidden>${ICON_CRAFT}</button>
       </div>
       <div class="open-build" data-ref="build" hidden>
-        <div class="build-info">
-          <span class="build-text"><b data-ref="info-name"></b><span class="cost" data-ref="info-cost"></span><span class="build-note" data-ref="info-note"></span></span>
+        <div class="build-actions">
+          <button class="btn small ghost danger-text" data-act="demolish" data-ref="demolish" hidden>Demolish</button>
           <button class="btn small" data-act="upgrade" data-ref="upgrade" hidden></button>
           <button class="btn small" data-act="repair" data-ref="repair" hidden></button>
-          <button class="btn small ghost" data-act="demolish" data-ref="demolish" hidden>Demolish</button>
           <button class="btn small ghost" data-act="exit">Done</button>
         </div>
+        <div class="build-info"><b data-ref="info-name"></b><span class="cost" data-ref="info-cost"></span><span class="build-note" data-ref="info-note"></span></div>
         <div class="build-palette" data-ref="palette"></div>
       </div>
       <button class="open-act place" data-act="place" data-ref="place" aria-label="Place" hidden>${ICON_HAMMER}<span data-ref="place-label">Place</span></button>
@@ -311,7 +315,7 @@ export class OpenHud {
           this.select(t.dataset.kind as PieceKind);
           break;
         case 'place':
-          this.place();
+          this.primary();
           break;
         case 'rotate':
           this.rotate();
@@ -358,6 +362,8 @@ export class OpenHud {
     this.tgx = NaN;
     this.trev = -1;
     this.denyUntil = 0;
+    this.denyText = '';
+    this.denyAt = -Infinity;
     this.gainN.fill(0);
     this.gainUntil.fill(0);
     this.dayKey = -1;
@@ -407,11 +413,7 @@ export class OpenHud {
         if (this.isBuilding) this.rotate();
         break;
       case 'place':
-        // On a piece: whatever it needs (a repair first, else an upgrade).
-        if (!this.isBuilding) break;
-        if (!this.target) this.place();
-        else if (this.repCost && (this.repOk || !this.upCost)) this.repair();
-        else this.upgrade();
+        this.primary();
         break;
       case 'demolish':
         if (this.isBuilding) this.demolish();
@@ -422,13 +424,22 @@ export class OpenHud {
     }
   }
 
-  /** A command of ours was refused (the rules' 'deny' event), or a check here failed. */
-  deny(why: string): void {
+  /**
+   * A command of ours was refused (the rules' 'deny' event), or a check here failed. False when the same
+   * refusal went up less than DENY_REPEAT_MS ago (e.g. "Your pack is full" on every swing): it only stays up
+   * longer, and the caller should skip its buzz too.
+   */
+  deny(why: string): boolean {
+    const now = performance.now();
+    this.denyUntil = now + DENY_MS;
+    if (why === this.denyText && now < this.denyAt + DENY_REPEAT_MS) return false;
+    this.denyText = why;
+    this.denyAt = now;
     this.denyEl.textContent = why;
     this.denyEl.classList.remove('show');
     void this.denyEl.offsetWidth;
     this.denyEl.classList.add('show');
-    this.denyUntil = performance.now() + DENY_MS;
+    return true;
   }
 
   /** We gathered something: "+2" next to that resource, adding up quick hits into one floater. */
@@ -699,11 +710,15 @@ export class OpenHud {
       this.setText(this.infoNote, p.ruined ? 'Rubble: repair it to use it again' : `${Math.ceil(p.hp)}/${maxHp(p.kind, p.tier)} HP`);
       this.infoNote.classList.remove('why');
       if (this.upCost) {
-        this.setHtml(this.upgradeBtn, `Upgrade to ${TIER_NAMES[Math.min(2, p.tier + 1)]} ${costHtml(this.upCost)}`);
+        // Two short lines, to fit the narrow column beside the Place button.
+        const to = TIER_NAMES[Math.min(2, p.tier + 1)];
+        this.setHtml(this.upgradeBtn, `<b>↑ ${to}</b><span class="cost">${costHtml(this.upCost)}</span>`);
+        const title = `Upgrade to ${to}`;
+        if (this.upgradeBtn.title !== title) this.upgradeBtn.title = title;
         this.upgradeBtn.classList.toggle('poor', !this.upOk);
       }
       if (this.repCost) {
-        this.setHtml(this.repairBtn, `Repair ${costHtml(this.repCost)}`);
+        this.setHtml(this.repairBtn, `<b>Repair</b><span class="cost">${costHtml(this.repCost)}</span>`);
         this.repairBtn.classList.toggle('poor', !this.repOk);
       }
       label = this.repCost && (this.repOk || !this.upCost) ? 'Repair' : this.upCost ? 'Upgrade' : 'Taken';
@@ -734,34 +749,39 @@ export class OpenHud {
     }
   }
 
+  /** The big button / Space: place on an empty tile; on a piece, whatever it needs (a repair first, else an upgrade). */
+  private primary(): void {
+    if (!this.isBuilding) return;
+    if (!this.target) this.place();
+    else if (this.repCost && (this.repOk || !this.upCost)) this.repair();
+    else this.upgrade();
+  }
+
   private place(): void {
     if (!this.isBuilding) return;
-    if (this.target) {
-      this.deny('Something is already built here');
-      return;
-    }
-    if (this.reason) return this.deny(this.reason);
-    if (!this.affordPlace) return this.deny(`Not enough resources for a ${PIECES[this.sel].label.toLowerCase()}`);
+    if (this.target) return this.refuse('Something is already built here');
+    if (this.reason) return this.refuse(this.reason);
+    if (!this.affordPlace) return this.refuse(`Not enough resources for a ${PIECES[this.sel].label.toLowerCase()}`);
     this.h.onCommand({ c: 'place', kind: this.sel, gx: this.tgx, gz: this.tgz, rot: this.rot });
   }
 
   private upgrade(): void {
     const p = this.target;
-    if (!p || !this.upCost) return this.deny(p ? 'It can’t be upgraded any further' : 'Nothing to upgrade here');
-    if (!this.upOk) return this.deny('Not enough resources to upgrade it');
+    if (!p || !this.upCost) return this.refuse(p ? 'It can’t be upgraded any further' : 'Nothing to upgrade here');
+    if (!this.upOk) return this.refuse('Not enough resources to upgrade it');
     this.h.onCommand({ c: 'upgrade', id: p.id });
   }
 
   private repair(): void {
     const p = this.target;
-    if (!p || !this.repCost) return this.deny(p ? 'It’s in one piece' : 'Nothing to repair here');
-    if (!this.repOk) return this.deny('Not enough resources to repair it');
+    if (!p || !this.repCost) return this.refuse(p ? 'It’s in one piece' : 'Nothing to repair here');
+    if (!this.repOk) return this.refuse('Not enough resources to repair it');
     this.h.onCommand({ c: 'repair', id: p.id });
   }
 
   private demolish(): void {
     const p = this.target;
-    if (!p) return this.deny('Nothing to demolish here');
+    if (!p) return this.refuse('Nothing to demolish here');
     this.h.onCommand({ c: 'demolish', id: p.id });
   }
 
@@ -770,7 +790,7 @@ export class OpenHud {
   private toggleCraft(): void {
     if (this.craftOpen) return this.setCraft(false);
     if (this.me?.state !== 'active') return;
-    if (!this.benchNear && !this.fireNear) return this.deny('Stand next to a workbench or campfire to craft');
+    if (!this.benchNear && !this.fireNear) return this.refuse('Stand next to a workbench or campfire to craft');
     this.setCraft(true);
   }
 
@@ -803,12 +823,17 @@ export class OpenHud {
   private craft(id: RecipeId): void {
     const r = RECIPES[id];
     if (!r) return;
-    if (r.crackers && (this.me?.crackers ?? 0) >= CRACKER.max) return this.deny(`You can carry only ${CRACKER.max} firecrackers`);
-    if (!canAfford(this.have, r.cost)) return this.deny(`Not enough resources for ${r.label.toLowerCase()}`);
+    if (r.crackers && (this.me?.crackers ?? 0) >= CRACKER.max) return this.refuse(`You can carry only ${CRACKER.max} firecrackers`);
+    if (!canAfford(this.have, r.cost)) return this.refuse(`Not enough resources for ${r.label.toLowerCase()}`);
     this.h.onCommand({ c: 'craft', recipe: id });
   }
 
   // ------------------------------------------------------------------ helpers
+
+  /** deny() for the checks here, which have nothing to do with its result. */
+  private refuse(why: string): void {
+    this.deny(why);
+  }
 
   private setText(e: HTMLElement, text: string): void {
     if (e.textContent !== text) e.textContent = text;

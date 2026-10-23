@@ -22,6 +22,13 @@ export interface PresentContext {
 }
 
 const GATHER_SFX: Record<ResourceKind, SfxName> = { wood: 'gatherWood', stone: 'gatherStone', bamboo: 'gatherBamboo', scrap: 'gatherScrap' };
+/** Colour of the chips flying off what's being gathered. */
+const GATHER_CHIPS: Record<ResourceKind, number> = { wood: 0xb07a45, stone: 0x9a9a9a, bamboo: 0x7cc24a, scrap: 0xa0522d };
+
+/** " from the north-east" for a horde at (dx, dz) from what it's going for ('' when it's right there). */
+function fromDir(dx: number, dz: number): string {
+  return Math.hypot(dx, dz) < 2 ? '' : ` from the ${compass(dx, dz)}`;
+}
 
 /** "+3 scrap, +20 food, 2 firecrackers, an axe" (empty: nothing). */
 function lootText(loot: Loot): string {
@@ -43,6 +50,10 @@ export class Presenter {
   private readonly bagOwners = new Map<number, string>();
   /** performance.now() until which another "stashed" message would be noise. */
   private depositQuiet = 0;
+  /** performance.now() until which no other 'chomp' is played (a siege bites walls dozens of times a second). */
+  private chompQuiet = 0;
+  /** Ids of the pandas people play (not bots), for "<Name> is back on their feet". */
+  private humans: Set<string>;
 
   constructor(
     private readonly ctx: PresentContext,
@@ -50,11 +61,17 @@ export class Presenter {
     private readonly localId: string,
   ) {
     this.names = new Map(specs.map((s) => [s.id, s.name]));
+    this.humans = Presenter.humanIds(specs);
   }
 
   /** Mid-match team change: someone took over a bot's panda. */
   setSpecs(specs: readonly PlayerSpec[]): void {
     this.names = new Map(specs.map((s) => [s.id, s.name]));
+    this.humans = Presenter.humanIds(specs);
+  }
+
+  private static humanIds(specs: readonly PlayerSpec[]): Set<string> {
+    return new Set(specs.filter((s) => !s.bot && !s.npc).map((s) => s.id));
   }
 
   present(events: readonly GameEvent[], snap: Snapshot): void {
@@ -69,6 +86,9 @@ export class Presenter {
     const name = (id: string) => (id === this.localId ? 'You' : (this.names.get(id) ?? 'Someone'));
     const mine = (id: string) => id === this.localId;
     const ground = (x: number, z: number) => renderer.currentMap.terrain.groundAt(x, z);
+    /** This batch's nearest 'chomp' (and its squared distance): at most one is played, see chompQuiet. */
+    let chomp: { x: number; z: number } | null = null;
+    let chompD2 = Infinity;
 
     for (const ev of events) {
       switch (ev.e) {
@@ -209,7 +229,10 @@ export class Presenter {
           break;
         }
         case 'bag': {
+          // The same bag again (part of it picked up, or scrap merged into it): nothing new to hear or say.
+          const known = this.bagOwners.has(ev.b.id);
           this.bagOwners.set(ev.b.id, ev.b.owner);
+          if (known) break;
           sfx.play('thud', ev.b, 0.6);
           if (ev.b.owner && ev.b.owner === this.names.get(this.localId)) hud.flash('Your pack dropped where you fell. Go and get it back!', 3500);
           break;
@@ -217,6 +240,7 @@ export class Presenter {
         case 'unbag': {
           const owner = this.bagOwners.get(ev.id) ?? '';
           this.bagOwners.delete(ev.id);
+          if (!ev.by) break; // an old world bag cleared away, nobody picked it up
           sfx.play('pickup', posOf(ev.by), 0.8);
           const me = this.names.get(this.localId) ?? '';
           if (mine(ev.by)) hud.flash(owner === me ? 'Got your pack back!' : owner ? `Picked up ${owner}'s pack` : 'Picked up a bag', 2000);
@@ -225,9 +249,7 @@ export class Presenter {
         }
         case 'gather': {
           sfx.play(GATHER_SFX[ev.r], ev, 0.8);
-          const y = ground(ev.x, ev.z) + 0.8;
-          if (ev.r === 'stone' || ev.r === 'scrap') renderer.effects.pop(ev.x, y, ev.z);
-          else renderer.effects.dust(ev.x, y - 0.5, ev.z);
+          renderer.effects.chips(ev.x, ground(ev.x, ev.z), ev.z, GATHER_CHIPS[ev.r]);
           if (mine(ev.id)) this.ctx.openHud?.gained(ev.r, ev.n);
           break;
         }
@@ -239,17 +261,19 @@ export class Presenter {
           break;
         case 'smash': {
           sfx.play('smash', ev);
-          const y = ground(ev.x, ev.z);
-          renderer.effects.dust(ev.x, y, ev.z);
-          renderer.effects.dust(ev.x + 0.6, y + 0.6, ev.z - 0.4);
-          renderer.effects.pop(ev.x, y + 0.4, ev.z);
+          renderer.effects.debris(ev.x, ground(ev.x, ev.z), ev.z);
           const d = Math.hypot(ev.x - listener.x, ev.z - listener.z);
           if (d < 10) renderer.shake(0.3 * (1 - d / 10));
           break;
         }
-        case 'chomp':
-          sfx.play('chomp', ev, 0.7);
+        case 'chomp': {
+          const d2 = (ev.x - listener.x) ** 2 + (ev.z - listener.z) ** 2;
+          if (d2 < chompD2) {
+            chomp = ev;
+            chompD2 = d2;
+          }
           break;
+        }
         case 'crafted': {
           const p = posOf(ev.id);
           sfx.play('crafted', p);
@@ -259,9 +283,11 @@ export class Presenter {
         }
         case 'deny':
           if (!mine(ev.id)) break;
+          // The same refusal over and over ("Your pack is full" on every swing): no buzz while it's still fresh.
+          if (this.ctx.openHud) {
+            if (!this.ctx.openHud.deny(ev.why)) break;
+          } else hud.flash(ev.why, 1800);
           sfx.play('deny', undefined, 0.6);
-          if (this.ctx.openHud) this.ctx.openHud.deny(ev.why);
-          else hud.flash(ev.why, 1800);
           break;
         case 'deposit': {
           const now = performance.now();
@@ -279,15 +305,17 @@ export class Presenter {
           if (mine(ev.id)) {
             const bed = snap.open?.survivors.find((s) => s.id === ev.id)?.bed ?? -1;
             hud.flash(bed >= 0 ? 'Respawned at your bed' : 'Respawned at the camp', 2500);
-          } else hud.flash(`${name(ev.id)} is back on their feet`, 2000);
+          } else if (this.humans.has(ev.id)) hud.flash(`${name(ev.id)} is back on their feet`, 2000);
           break;
         }
         case 'siege': {
           sfx.play('siegeHorn');
           this.vibrate(200);
-          // The horde's position is in the same snapshot; the event says where it's going.
+          // The event's (x, z) is where the horde comes from, clamped to the world's edge, so the direction comes
+          // from the snapshot (horde → target, like OpenHud's banner); without one, from our panda towards (x, z).
           const s = snap.open?.siege;
-          const from = s ? ` from the ${compass(s.x - ev.x, s.z - ev.z)}` : '';
+          const me = posOf(this.localId);
+          const from = s ? fromDir(s.x - s.tx, s.z - s.tz) : fromDir(ev.x - me.x, ev.z - me.z);
           const eta = Math.round(ev.eta);
           hud.flash(
             ev.base ? `Siege incoming${from} in ${eta} s! Defend the base!` : `A horde is hunting you${from}! It gets here in ${eta} s`,
@@ -315,6 +343,14 @@ export class Presenter {
           sfx.play('pickup', posOf(ev.id), 0.7);
           hud.flash("This bed is yours: you'll respawn here", 2500);
           break;
+      }
+    }
+
+    if (chomp) {
+      const now = performance.now();
+      if (now >= this.chompQuiet) {
+        this.chompQuiet = now + 150;
+        sfx.play('chomp', chomp, 0.7);
       }
     }
   }

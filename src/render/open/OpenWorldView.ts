@@ -13,10 +13,13 @@ import { makeContext, NB, PAL, PAL_SIZE, type OpenContext } from './context';
 import { Ghost, PieceKit } from './pieces';
 import { OpenSky } from './sky';
 
-/** Chunks this close to the camera's focus get built (one per frame, nearest first)… */
-const LOAD = 170;
+/**
+ * Chunks this close to the camera's focus get built (one per frame, nearest first)… The camera never sees
+ * much more than 50 m from the focus, and the far plane (Renderer: OPEN_FAR) and fog hide what's beyond.
+ */
+const LOAD = 110;
 /** …and are dropped (GPU buffers freed) once further than this. */
-const DROP = 230;
+const DROP = 150;
 /** Built at once around a fresh camera (new match, first frame), so there's ground under your feet. */
 const PRIME = 48;
 /** Dropping far chunks is checked this often (frames). */
@@ -62,6 +65,8 @@ export class OpenWorldView {
   private seenRev = -1;
   /** Pieces by chunk key (all of the world's, loaded or not: it's what a chunk gets when it's built). */
   private buckets = new Map<number, Piece[]>();
+  /** Standing campfires per chunk key (`fireSig`), so fires are only re-collected when one comes or goes. */
+  private fireSigs = new Map<number, string>();
   private fires: Fire[] = [];
   private readonly flameOuter: THREE.InstancedMesh;
   private readonly flameInner: THREE.InstancedMesh;
@@ -129,6 +134,8 @@ export class OpenWorldView {
     m?.takeDirty();
     this.buckets = new Map();
     if (m) for (const p of m.pieces.values()) this.bucketOf(this.keyOf(p)).push(p);
+    this.fireSigs = new Map();
+    for (const [key, b] of this.buckets) this.fireSigs.set(key, fireSig(b));
     for (const [key, c] of this.chunks) {
       c.pieces.set(this.buckets.get(key) ?? EMPTY);
       c.refreshNodes(m);
@@ -140,6 +147,21 @@ export class OpenWorldView {
 
   setGhost(g: GhostSpec | null): void {
     this.ghost.set(g);
+  }
+
+  /**
+   * Runs `compile` with the campfire lights switched on, then puts them back. The renderer compiles the
+   * scene this way once per world, so the shader variants with the four point lights exist before the
+   * first dusk: otherwise every lit material would recompile right then (a long freeze on phones).
+   */
+  withLightsOn(compile: () => void): void {
+    const was = this.lights.map((l) => l.visible);
+    for (const l of this.lights) l.visible = true;
+    try {
+      compile();
+    } finally {
+      for (let i = 0; i < this.lights.length; i++) this.lights[i].visible = was[i];
+    }
   }
 
   /** Where the pandas are (x, z pairs), for gates to swing open. */
@@ -266,13 +288,24 @@ export class OpenWorldView {
     this.seenRev = m.rev;
     const dirty = m.takeDirty();
     if (dirty.pieces.size) {
-      for (const key of dirty.pieces) this.buckets.set(key, []);
+      // (Buckets are only read, never kept, by the chunks: refill them in place.)
+      for (const key of dirty.pieces) this.bucketOf(key).length = 0;
       for (const p of m.pieces.values()) {
         const key = this.keyOf(p);
         if (dirty.pieces.has(key)) this.bucketOf(key).push(p);
       }
-      for (const key of dirty.pieces) this.chunks.get(key)?.pieces.set(this.buckets.get(key) ?? EMPTY);
-      this.collectFires();
+      // A siege dirties the base's chunk every few hits: chunks retint rather than rebuild when only
+      // hit points changed, and fires are re-collected only when a campfire was built, lost or mended.
+      let fires = false;
+      for (const key of dirty.pieces) {
+        const bucket = this.buckets.get(key) ?? EMPTY;
+        this.chunks.get(key)?.pieces.set(bucket);
+        const sig = fireSig(bucket);
+        if (sig === (this.fireSigs.get(key) ?? '')) continue;
+        this.fireSigs.set(key, sig);
+        fires = true;
+      }
+      if (fires) this.collectFires();
     }
     if (dirty.nodes.size) {
       // A grove at a chunk edge has stalks next door too.
@@ -333,8 +366,8 @@ export class OpenWorldView {
       this.flameInner.instanceMatrix.needsUpdate = true;
     }
 
-    // Warm lights on the nearest few, at night. All four are on or off together: a changing light
-    // count would recompile every shader.
+    // Warm lights on the nearest few, at night. All four are on or off together: only two light counts
+    // ever, and the renderer compiled both up front (withLightsOn).
     const night = smoothstep(0.05, 0.6, this.sky.night);
     const on = night > 0.01;
     for (const l of this.lights) l.visible = on;
@@ -391,6 +424,13 @@ export class OpenWorldView {
       this.bags.set(b.id, g);
     }
   }
+}
+
+/** The standing campfires among some pieces, as a short key ('' for none): what collectFires depends on. */
+function fireSig(pieces: readonly Piece[]): string {
+  let sig = '';
+  for (const p of pieces) if (p.kind === 'campfire' && !p.ruined) sig += `${p.id},`;
+  return sig;
 }
 
 /**

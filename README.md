@@ -2,7 +2,11 @@
 
 Cute, cartoon-gory co-op survival for phones (landscape). 1–4 panda survivors with knives, axes and
 javelins must cross a nature valley from the start camp to the rescue hut in the opposite corner,
-while a horde of zombie pandas tries to eat them.
+while a horde of zombie pandas tries to eat them. Or they settle down in **Infinite mode**: a big
+open world where they gather, build a base and survive as many days as they can.
+
+> **Status:** Infinite mode (21–23 Oct 2026) is written and reviewed but has **not been compiled or
+> run yet**. Expect a round of type errors on the first `npm run typecheck`.
 
 Web app (Vite + TypeScript + Three.js + Rapier physics + PeerJS), hosted on GitHub Pages and
 installable on a phone's home screen. Can later be wrapped as an Android app.
@@ -45,7 +49,7 @@ install prompt, once it offers one; iPhone/iPad: how to add it via Share) and a 
 ### Offline
 
 The production build registers a service worker ([public/sw.js](public/sw.js)) that keeps a copy of
-the game on the device after the first visit, so solo and story mode start without a connection
+the game on the device after the first visit, so solo, story and Infinite mode start without a connection
 (multiplayer still needs one). The page is always fetched fresh when online, so a new deploy shows
 up on the next launch; files from older builds are dropped automatically. The dev server doesn't
 register it.
@@ -92,6 +96,43 @@ register it.
   match just played. Story chapters don't count.
 - Bridges, fords and ridge passes, plus a few metres before and after each, are always kept free of
   trees and rocks.
+
+## Infinite mode
+
+Menu → **Infinite**: an open-world, base-building survival mode that never ends. Play it solo, with
+0–3 bot buddies, or host it for friends (Multiplayer → Create room → switch the room to Infinite).
+
+- **Worlds:** 3 save slots on the device. A new world takes a name, an optional seed, a difficulty
+  and 0–3 bots. Each world is a 1 km square generated from its seed, with seven biomes (meadow,
+  bamboo forest, pine forest, snowy highlands, fen, quarry, farmland), rivers, ridges and 25–40
+  abandoned buildings to loot and repair. It's saved every minute, on pause, when the page is
+  hidden and on **Save & quit**.
+- **Day and night:** a day lasts 20 minutes. Nights bring more zombies and faster hordes; campfires
+  glow and keep lone zombies from appearing next to them.
+- **Gathering:** hit trees (wood), rocks (stone), bamboo groves (bamboo) and scrap piles (scrap) with
+  no zombie in reach. An axe chops and mines faster, a knife cuts bamboo and scrap faster. It's loud,
+  and hordes may come to look. Nodes regrow after 10 minutes. Supply crates in the buildings hold
+  scrap, food, firecrackers and sometimes a weapon.
+- **Pack and stash:** your backpack holds 60 units. Walk up to a storage chest to empty it into the
+  team stash; building and crafting use the stash when a chest is near.
+- **Building** (hammer button or **B**): one piece per 2 m tile, on the tile in front of you. Walls
+  and gates (pandas walk through, zombies don't) upgrade from bamboo to wood to stone; also spikes,
+  campfire, workbench, bed, storage chest and lookout tower. Pieces get chewed down to rubble; repair
+  or upgrade them (that also makes an abandoned building's piece yours), or demolish your own for
+  half the price back.
+- **Crafting** (anvil button or **F**) at a workbench (knife, axe, javelins, firecrackers, bandage)
+  or a campfire (bamboo stew).
+- **Hunger** drains slowly; bamboo snacks and stew fill it. Hungry pandas are slower, starving hurts.
+- **Beds:** walk up to a bed you or a friend built to make it yours. Downed and not revived within
+  30 s, you respawn at your bed (else at the camp); your pack stays where you fell as a bag anyone can
+  pick up. Nobody turns into a zombie here.
+- **Hordes and sieges:** lone zombies wander about, roaming hordes drift over the world, and every
+  day or two a siege comes for your base (or for you, if nobody is near the base), with a warning
+  first. A lookout tower spots hordes from afar and gives more warning.
+- **Multiplayer:** friends can drop in any time (a panda of their own while there are fewer than 4,
+  else a bot's). Leaving takes your panda out of the world; the host's save keeps it under your
+  nickname for next time. Nobody can get more than 250 m from the nearest other player. Only the
+  host saves.
 
 ## Story mode
 
@@ -152,6 +193,21 @@ Attacks auto-aim at the nearest zombie. Firecrackers fly ~9 m the way you're fac
 pause button opens the pause menu. The minimap under the goal arrow shows your team and where to go;
 tap it (or press M) for a bigger map.
 
+Infinite mode adds (touch: the hammer and anvil buttons by the map; build mode swaps the fight
+buttons for Place, Rotate and Exit):
+
+| Key | Action |
+|---|---|
+| B | Build mode on / off |
+| 1–8 | Pick a piece (wall, gate, spikes, campfire, workbench, bed, storage, lookout); enters build mode |
+| R | Rotate the piece (build mode; otherwise it still switches weapons) |
+| Space or Enter | Place, or upgrade / repair the piece on that tile (build mode; otherwise Space attacks) |
+| X or Delete | Demolish the piece on that tile (build mode) |
+| F | Craft, next to a workbench or campfire |
+| M | Big map (the whole world) |
+
+There are no gamepad build controls yet.
+
 ## Project structure
 
 ```
@@ -160,6 +216,7 @@ src/
   config.ts            all gameplay tuning (speeds, horde size, damage, timers, camera, network)
   settings.ts          persisted player settings
   storyProgress.ts     story chapters unlocked / finished on this device
+  openSaves.ts         Infinite mode worlds saved on this device (3 slots)
   core/                math helpers, seeded RNG
   sim/                 game logic only, no rendering (runs on the host in multiplayer)
     Simulation.ts      authoritative state: physics, survivors, zombie AI, javelins, pickups, rules
@@ -171,6 +228,11 @@ src/
                        and the list in index.ts; story/ holds the five story chapter maps
     story/             story mode: chapters.ts (the script: objectives, lines, cards, rules),
                        Mission.ts (runs a chapter inside the simulation), docBrain.ts (Doc's AI)
+    open/              Infinite mode: types.ts + config.ts (the contract and all its tuning),
+                       worldgen.ts and world*.ts / biomes.ts / pois.ts (the seeded world),
+                       rules.ts (OpenRules, runs inside the simulation), structures.ts (pieces),
+                       economy.ts, clock.ts, hordes.ts (zombies, hordes, sieges), openBots.ts,
+                       mirror.ts (every client's copy of the world), save.ts, physicsChunks.ts
     terrain.ts         height field + terrain grid, water / bridge / ridge / ice queries
     river.ts           smoothed curves for rivers and ridges; bridges, fords, passes
     route.ts           the way from camp to hut (HUD arrow, bots, spawning, weapon racks)
@@ -190,12 +252,17 @@ src/
     nameTag.ts         floating names with health bars
     weaponModels.ts    knife / axe / javelin models
     toon.ts            cartoon materials and outlines
+    open/              Infinite mode: OpenWorldView.ts (streams 64 m chunks around the camera),
+                       chunk.ts / terrainChunk.ts, pieces.ts (building pieces, build ghost),
+                       sky.ts (day and night), assets.ts, bake.ts, context.ts
   game/                sessions: LocalGame (solo / host), RemoteGame (guest), Presenter (events → fx),
                        maps.ts (map choices, "Random", cache of built maps)
   net/                 PeerJS host & client, message protocol, compact snapshot codec
   audio/               synthesised sound effects and music (no audio files)
   input/               joystick, tilt, tap & swipe, keyboard, gamepad → PlayerInput
-  ui/                  menu, lobby, settings, HUD + minimap, story menu / cards / dialogue (plain DOM)
+  ui/                  menu, lobby, settings, HUD + minimap, story menu / cards / dialogue (plain DOM);
+                       InfiniteMenu.ts (save slots, new world), OpenHud.ts (day, hunger, pack,
+                       build mode, crafting)
 ```
 
 The simulation and the renderer only talk through `PlayerInput` (in) and `Snapshot` (out), which is
@@ -223,6 +290,8 @@ everyone, so bump `PROTOCOL_VERSION` in `src/net/protocol.ts` when you do.
    - ✅ D. Random Valley (new generated layout every match)
 8. ✅ Sleeping zombies (noise and sneaking) and firecrackers
 9. ✅ Story mode: *Find the Cure*, 5 chapters (solo + bots)
+10. Infinite mode: open world, base building, solo / bots / multiplayer (written and reviewed,
+    not compiled yet)
 
 Ideas next: special zombie types, Android packaging (Capacitor or PWABuilder), host
 migration in multiplayer, client-side prediction for smoother guest movement.
